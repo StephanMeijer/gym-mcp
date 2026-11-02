@@ -1159,3 +1159,45 @@ async fn body_height_is_stored_in_cm_and_kept_apart(pool: PgPool) {
         "height doesn't count as body weight"
     );
 }
+
+#[sqlx::test]
+async fn vitals_store_their_unit_and_show_in_overview(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    let add = |v: Value| {
+        let app = app.clone();
+        async move { measurement::measurement_add(&app, ME, a(v)).await }
+    };
+    let waist = add(json!({"kind": "waist_circumference", "value": 34, "unit": "in"}))
+        .await
+        .unwrap();
+    assert_eq!(waist["unit"], "cm");
+    assert!((waist["value"].as_f64().unwrap() - 86.36).abs() < 1e-9, "{waist}");
+    for (kind, value, unit) in [
+        ("body_fat", 18.5, "%"),
+        ("resting_heart_rate", 52.0, "bpm"),
+        ("blood_pressure_systolic", 128.0, "mmHg"),
+        ("blood_pressure_diastolic", 82.0, "mmHg"),
+    ] {
+        let m = add(json!({"kind": kind, "value": value})).await.unwrap();
+        assert_eq!((m["kind"].as_str(), m["unit"].as_str()), (Some(kind), Some(unit)));
+    }
+    add(json!({"kind": "resting_heart_rate", "value": 60, "measured_at": hours_ago(48)}))
+        .await
+        .unwrap();
+
+    let msg = user_msg(add(json!({"kind": "body_fat", "value": 120})).await);
+    assert!(msg.contains("invalid value"), "{msg}");
+    let msg = user_msg(add(json!({"kind": "resting_heart_rate", "value": 52, "unit": "kg"})).await);
+    assert!(msg.contains("bpm"), "{msg}");
+
+    let ov = search::training_overview(&app, ME, a(json!({"gym": "ndsm"})))
+        .await
+        .unwrap();
+    let m = &ov["overview"]["measurements"];
+    assert_eq!(m["resting_heart_rate"]["value"], 52.0, "latest, not the older 60: {m}");
+    assert_eq!(m["resting_heart_rate"]["avg_28d"], 56.0, "{m}");
+    assert_eq!(m["blood_pressure_systolic"]["unit"], "mmHg");
+    assert!(m.get("body_weight").is_none(), "body weight has its own field");
+    assert!(ov["overview"]["body_weight"].is_null());
+}

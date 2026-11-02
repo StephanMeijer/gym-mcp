@@ -51,7 +51,12 @@ Cardio: exercises with kind cardio. \"20 min bike, level 8, 7.5 km\" → one set
 intensity \"level 8\". progress/personal_records/set_search report distance and pace (seconds per km).
 Body weight: whenever the user mentions their weight (\"82.4 this morning\"), measurement_add (unit lb if they gave pounds). \
 training_overview.body_weight has the latest and its 4-week change; use it to judge a cut or bulk. \
-If they mention their height (\"lengte\"), measurement_add kind body_height (cm; unit in for inches).
+If they mention their height (\"lengte\"), measurement_add kind body_height (cm; unit in for inches). \
+Also log waist_circumference (cm, at the navel), body_fat (%), resting_heart_rate (bpm) and blood pressure: \
+\"128/82\" = two adds, blood_pressure_systolic 128 and blood_pressure_diastolic 82. training_overview.measurements \
+has the latest of each with its 28-day average: waist down at stable weight = recomposition; resting heart rate \
+5+ bpm above its average = fatigue or illness, suggest a lighter session. Don't diagnose blood pressure; if it's \
+high, suggest seeing a doctor and take it into account like a limitation.
 Times: answers are in the user's timezone; inputs may be RFC 3339 or local (\"2026-11-02 19:40\").
 Photos stay with you; send only text.";
 
@@ -318,7 +323,7 @@ impl GymServer {
 
     // ----- measurements -----
     #[tool(
-        description = "Log a body measurement: body weight (lb is converted to kg) or height (in is converted to cm), optionally at a past measured_at.",
+        description = "Log a body measurement (one value): body weight (lb → kg), height or waist (in → cm), body fat %, resting heart rate, or one side of blood pressure; optionally at a past measured_at.",
         annotations(
             title = "Log measurement",
             read_only_hint = false,
@@ -369,7 +374,7 @@ impl GymServer {
 
     // ----- search & analysis -----
     #[tool(
-        description = "Everything needed to recommend what to do next at a gym: its equipment text, every exercise with its equipment text and last session, per-muscle recency, weekly/4-week weighted sets, training days and RPE, today's work, the goal and the latest body weight with its 4-week change.",
+        description = "Everything needed to recommend what to do next at a gym: its equipment text, every exercise with its equipment text and last session, per-muscle recency, weekly/4-week weighted sets, training days and RPE, today's work, the goal, the latest body weight with its 4-week change, and the latest of every other measurement with its 28-day average.",
         annotations(title = "Training overview", read_only_hint = true, open_world_hint = false)
     )]
     async fn training_overview(&self, p: P, a: Parameters<OverviewArgs>) -> R {
