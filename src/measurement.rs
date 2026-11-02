@@ -105,7 +105,7 @@ fn convert(kind: MeasurementKind, value: f64, unit: Option<Unit>) -> AppResult<f
     }
 }
 
-async fn measured_at(tx: &mut Tx, s: &Option<String>) -> AppResult<Option<chrono::DateTime<chrono::Utc>>> {
+pub(crate) async fn measured_at(tx: &mut Tx, s: &Option<String>) -> AppResult<Option<chrono::DateTime<chrono::Utc>>> {
     let Some(s) = s else { return Ok(None) };
     let at = parse_time(tx, s).await?;
     not_future(at, now(tx).await?)?;
