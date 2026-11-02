@@ -4,6 +4,7 @@ use chrono::{DateTime, Duration, Utc};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sqlx::AssertSqlSafe;
 
 use crate::db::{self, App, AppResult, Tx, user_err};
 use crate::resolve::{self, Kind};
@@ -130,7 +131,8 @@ pub async fn workout_json(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResul
                                    'rpe', s.rpe, 'rest_s', s.rest_s, 'set_type', s.set_type,
                                    'unilateral', s.unilateral, 'load_basis', s.load_basis,
                                    'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
-                                   'machine', s.machine, 'notes', NULLIF(s.notes, '')) ORDER BY s.performed_at, s.id)) AS obj
+                                   'machine', s.machine, 'variant', s.variant,
+                                   'notes', NULLIF(s.notes, '')) ORDER BY s.performed_at, s.id)) AS obj
                     FROM (SELECT ws.*, row_number() OVER (PARTITION BY ws.exercise_id ORDER BY ws.performed_at, ws.id) AS n
                           FROM workout_set ws WHERE ws.workout_id = w.id) s
                     JOIN exercise e ON e.id = s.exercise_id
@@ -465,18 +467,22 @@ pub struct SetAddArgs {
     /// Machine brand/model for all these sets ("Technogym Selection"), read off the photo when visible.
     /// Omit to reuse the last machine for this exercise at this gym; "" = unknown.
     pub machine: Option<String>,
+    /// Grip or variant for all these sets ("neutral grip", "wide", "seated").
+    /// Omit to reuse the last variant for this exercise at this gym; "" = standard.
+    pub variant: Option<String>,
     /// One arm/leg at a time: reps are per side and each set counts once per side. Default false.
     pub unilateral: Option<bool>,
     /// For all these sets; omit for the default convention.
     pub load_basis: Option<LoadBasis>,
 }
 
-/// The machine for new sets and where it came from: given, last_used_here, or none.
-async fn machine_for(
+/// The machine or variant (`column`) for new sets and where it came from: given, last_used_here, or none.
+async fn last_here(
     tx: &mut Tx,
     owner: &str,
     workout_id: i64,
     exercise_id: i64,
+    column: &'static str,
     given: &Option<String>,
 ) -> AppResult<(Option<String>, &'static str)> {
     if let Some(m) = given {
@@ -487,12 +493,13 @@ async fn machine_for(
             (Some(m.to_owned()), "given")
         });
     }
-    let last: Option<String> = sqlx::query_scalar(
-        "SELECT s.machine FROM workout_set s JOIN workout w ON w.id = s.workout_id
-         WHERE w.owner_sub = $1 AND s.exercise_id = $3 AND s.machine IS NOT NULL
+    // column is a compile-time literal ("machine" or "variant"); values are bound.
+    let last: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT s.{column} FROM workout_set s JOIN workout w ON w.id = s.workout_id
+         WHERE w.owner_sub = $1 AND s.exercise_id = $3 AND s.{column} IS NOT NULL
            AND w.gym_id = (SELECT gym_id FROM workout WHERE id = $2)
-         ORDER BY s.performed_at DESC LIMIT 1",
-    )
+         ORDER BY s.performed_at DESC LIMIT 1"
+    )))
     .bind(owner)
     .bind(workout_id)
     .bind(exercise_id)
@@ -581,7 +588,8 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
     let exercise_id = resolve::id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let now = now(&mut tx).await?;
     let original_start = t.started_at;
-    let (machine, machine_source) = machine_for(&mut tx, owner, t.id, exercise_id, &a.machine).await?;
+    let (machine, machine_source) = last_here(&mut tx, owner, t.id, exercise_id, "machine", &a.machine).await?;
+    let (variant, variant_source) = last_here(&mut tx, owner, t.id, exercise_id, "variant", &a.variant).await?;
 
     for (i, s) in a.sets.iter().enumerate() {
         let at = match &s.performed_at {
@@ -595,8 +603,8 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         fit_in_window(&mut tx, &mut t, at, now).await?;
         sqlx::query(
             "INSERT INTO workout_set (workout_id, exercise_id, performed_at, reps, weight_kg, duration_s, rpe, rest_s, notes,
-                                      distance_m, intensity, machine, set_type, unilateral, load_basis)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, coalesce($9, ''), $10, coalesce($11, ''), $12, $13, $14, NULLIF($15, 'default'))",
+                                      distance_m, intensity, machine, set_type, unilateral, load_basis, variant)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, coalesce($9, ''), $10, coalesce($11, ''), $12, $13, $14, NULLIF($15, 'default'), $16)",
         )
         .bind(t.id)
         .bind(exercise_id)
@@ -613,6 +621,7 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         .bind(s.set_type.unwrap_or_default().as_str())
         .bind(a.unilateral.unwrap_or(false))
         .bind(a.load_basis.map(LoadBasis::as_str))
+        .bind(&variant)
         .execute(&mut *tx)
         .await?;
     }
@@ -622,6 +631,8 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         "added": a.sets.len(),
         "machine": machine,
         "machine_source": machine_source,
+        "variant": variant,
+        "variant_source": variant_source,
         "workout": w,
         "started_at_moved_back": t.started_at != original_start,
         "closed_stale": closed,
@@ -640,6 +651,8 @@ pub struct SetUpdateArgs {
     pub intensity: Option<String>,
     /// "" = unknown.
     pub machine: Option<String>,
+    /// Grip or variant; "" = standard.
+    pub variant: Option<String>,
     /// 1-10 in half steps.
     pub rpe: Option<f64>,
     pub rest_s: Option<i32>,
@@ -701,7 +714,7 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
             machine = CASE WHEN $12::text IS NULL THEN machine ELSE NULLIF(btrim($12), '') END,
             set_type = coalesce($13, set_type), unilateral = coalesce($14, unilateral),
             load_basis = CASE WHEN NOT coalesce($14, unilateral) THEN NULL WHEN $15::text IS NULL THEN load_basis ELSE NULLIF($15, 'default') END,
-            updated_at = now()
+            variant = CASE WHEN $16::text IS NULL THEN variant ELSE NULLIF(btrim($16), '') END, updated_at = now()
          WHERE id = $1",
     )
     .bind(a.set_id)
@@ -719,6 +732,7 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
     .bind(a.set_type.map(SetType::as_str))
     .bind(a.unilateral)
     .bind(a.load_basis.map(LoadBasis::as_str))
+    .bind(&a.variant)
     .execute(&mut *tx)
     .await?;
     let w = workout_json(&mut tx, owner, workout_id).await?;

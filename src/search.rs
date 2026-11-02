@@ -31,6 +31,8 @@ const LOAD: &str = load!();
 const SIDES: &str = sides!();
 const E1RM: &str = concat!("(", load!(), " * (1 + s.reps / 30.0))"); // Epley; per limb for unilateral sets
 const VOLUME: &str = concat!("(", load!(), " * s.reps * ", sides!(), ")");
+// Groups history per machine and variant; '' = unknown machine / standard variant.
+const SETUP_KEY: &str = "(coalesce(lower(s.machine), '') || '|' || coalesce(lower(s.variant), ''))";
 const PACE: &str = "(s.duration_s * 1000.0 / NULLIF(s.distance_m, 0))"; // seconds per km
 
 fn limit(l: Option<i64>) -> i64 {
@@ -78,15 +80,19 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
          stats AS (SELECT exercise_id, max(performed_at) AS last_done,
                           count(*) FILTER (WHERE performed_at >= now() - interval '30 days') AS sets_30d
                    FROM work GROUP BY exercise_id),
-         -- the machine last used for each exercise at this gym
-         here AS (SELECT DISTINCT ON (exercise_id) exercise_id, machine FROM mine
-                  WHERE gym_id = $2 AND machine IS NOT NULL ORDER BY exercise_id, performed_at DESC),
-         -- the last session on that machine at any gym (same brand compares across gyms), else the last session
+         -- the machine and the variant last used for each exercise at this gym
+         here AS (SELECT exercise_id,
+                         (array_agg(machine ORDER BY performed_at DESC) FILTER (WHERE machine IS NOT NULL))[1] AS machine,
+                         (array_agg(variant ORDER BY performed_at DESC) FILTER (WHERE variant IS NOT NULL))[1] AS variant
+                  FROM mine WHERE gym_id = $2 GROUP BY exercise_id),
+         -- the last session on that machine and variant at any gym (same brand compares across gyms), else the last session
          picked AS (
             SELECT s.* FROM work s LEFT JOIN here h ON h.exercise_id = s.exercise_id
             WHERE (h.machine IS NULL OR lower(s.machine) = lower(h.machine))
+              AND (h.variant IS NULL OR lower(s.variant) = lower(h.variant))
               AND s.workout_id = (SELECT m.workout_id FROM work m
                                   WHERE m.exercise_id = s.exercise_id AND (h.machine IS NULL OR lower(m.machine) = lower(h.machine))
+                                    AND (h.variant IS NULL OR lower(m.variant) = lower(h.variant))
                                   ORDER BY m.performed_at DESC LIMIT 1)),
          last_session AS (
             SELECT s.exercise_id,
@@ -96,7 +102,7 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                        'sets', json_agg(json_build_object('reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
                                                           'rpe', s.rpe, 'rest_s', s.rest_s, 'distance_m', s.distance_m,
                                                           'intensity', NULLIF(s.intensity, ''), 'machine', s.machine,
-                                                          'unilateral', s.unilateral, 'load_basis', s.load_basis)
+                                                          'variant', s.variant, 'unilateral', s.unilateral, 'load_basis', s.load_basis)
                                                           ORDER BY s.performed_at)) AS last
             FROM picked s
             GROUP BY s.exercise_id)
@@ -108,7 +114,8 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                     'id', e.id, 'name', e.name, 'kind', e.kind, 'muscle_groups', e.muscle_groups,
                     'secondary_muscle_groups', e.secondary_muscle_groups,
                     'equipment', NULLIF(e.equipment, ''), 'last_done', st.last_done, 'days_since', current_date - st.last_done::date,
-                    'machine_here', h.machine, 'last_session', ls.last,
+                    'machine_here', h.machine, 'variant_here', h.variant, 'last_session', ls.last,
+                    'variants_used', (SELECT array_agg(DISTINCT variant) FROM mine WHERE exercise_id = e.id AND variant IS NOT NULL),
                     'machines_used', (SELECT array_agg(DISTINCT machine) FROM mine WHERE exercise_id = e.id AND machine IS NOT NULL), 'sets_last_30d', coalesce(st.sets_30d, 0))
                     ORDER BY st.last_done NULLS FIRST, e.name)
                 FROM exercise e
@@ -344,6 +351,8 @@ pub struct SetSearchArgs {
     pub equipment: Option<String>,
     /// Only sets on a machine whose name contains this, e.g. "technogym".
     pub machine: Option<String>,
+    /// Only sets whose grip or variant contains this, e.g. "neutral".
+    pub variant: Option<String>,
     pub gym: Option<String>,
     /// Inclusive. RFC 3339 or a local date/time ("2026-10-01").
     pub from: Option<String>,
@@ -373,7 +382,7 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
                 'performed_at', s.performed_at, 'reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
                 'rpe', s.rpe, 'rest_s', s.rest_s, 'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
                 'set_type', s.set_type, 'unilateral', s.unilateral, 'load_basis', s.load_basis,
-                'machine', s.machine, 'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
+                'machine', s.machine, 'variant', s.variant, 'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
          FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN gym g ON g.id = w.gym_id
          JOIN exercise e ON e.id = s.exercise_id
          WHERE w.owner_sub = "
@@ -393,6 +402,11 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
     if let Some(m) = &a.machine {
         q.push(" AND s.machine ILIKE '%' || ")
             .push_bind(m.clone())
+            .push(" || '%'");
+    }
+    if let Some(v) = &a.variant {
+        q.push(" AND s.variant ILIKE '%' || ")
+            .push_bind(v.clone())
             .push(" || '%'");
     }
     if let Some(id) = gym {
@@ -479,8 +493,10 @@ pub struct ProgressArgs {
     /// Matches primary muscles. Coarse names work too: back, shoulders, legs, arms.
     pub muscle_group: Option<String>,
     pub metric: Metric,
-    /// Only sets on a machine whose name contains this. With an exercise, points are already split per machine.
+    /// Only sets on a machine whose name contains this. With an exercise, points are already split per machine and variant.
     pub machine: Option<String>,
+    /// Only sets whose grip or variant contains this.
+    pub variant: Option<String>,
     /// Default week (ISO, Monday start, local time).
     #[serde(default)]
     pub bucket: Bucket,
@@ -510,21 +526,17 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
         Bucket::Week => "week",
         Bucket::Month => "month",
     };
-    // One exercise: a point per machine, since machine weights don't compare across brands.
-    let machine = if exercise.is_some() {
-        "min(s.machine)"
+    // One exercise: a point per machine and variant, since machine weights don't compare across brands
+    // and a different grip is a different lift.
+    let (machine, variant, machine_key) = if exercise.is_some() {
+        ("min(s.machine)", "min(s.variant)", SETUP_KEY)
     } else {
-        "NULL::text"
-    };
-    let machine_key = if exercise.is_some() {
-        "lower(s.machine)"
-    } else {
-        "NULL::text"
+        ("NULL::text", "NULL::text", "NULL::text")
     };
     let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
-        "SELECT coalesce(json_agg(json_build_object('period_start', b, 'machine', machine, 'value', v)
+        "SELECT coalesce(json_agg(json_build_object('period_start', b, 'machine', machine, 'variant', variant, 'value', v)
                                   ORDER BY machine_key NULLS FIRST, b), '[]'::json) FROM (
-            SELECT date_trunc($2, s.performed_at)::date AS b, {machine_key} AS machine_key, {machine} AS machine, {metric} AS v
+            SELECT date_trunc($2, s.performed_at)::date AS b, {machine_key} AS machine_key, {machine} AS machine, {variant} AS variant, {metric} AS v
             FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN exercise e ON e.id = s.exercise_id
             WHERE w.owner_sub = $1 AND s.set_type = 'working'
               AND ($3::bigint IS NULL OR s.exercise_id = $3)
@@ -532,6 +544,7 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
               AND ($5::timestamptz IS NULL OR s.performed_at >= $5::timestamptz)
               AND ($6::timestamptz IS NULL OR s.performed_at < $6::timestamptz)
               AND ($7::text IS NULL OR s.machine ILIKE '%' || $7 || '%')
+              AND ($8::text IS NULL OR s.variant ILIKE '%' || $8 || '%')
             GROUP BY 1, 2) x"
     )))
     .bind(owner)
@@ -541,6 +554,7 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
     .bind(&a.from)
     .bind(&a.to)
     .bind(&a.machine)
+    .bind(&a.variant)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -560,8 +574,8 @@ pub async fn personal_records(app: &App, owner: &str, a: RecordsArgs) -> AppResu
     let exercise = opt_id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
         "WITH mine AS (
-            -- records are per machine (stack weights don't compare across brands); '' = unknown machine
-            SELECT s.*, coalesce(lower(s.machine), '') AS machine_key FROM workout_set s JOIN workout w ON w.id = s.workout_id
+            -- records are per machine (stack weights don't compare across brands) and per variant
+            SELECT s.*, {SETUP_KEY} AS machine_key FROM workout_set s JOIN workout w ON w.id = s.workout_id
             WHERE w.owner_sub = $1 AND s.set_type = 'working' AND ($2::bigint IS NULL OR s.exercise_id = $2)),
          heaviest AS (
             SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
@@ -596,11 +610,12 @@ pub async fn personal_records(app: &App, owner: &str, a: RecordsArgs) -> AppResu
                    json_build_object('duration_s', duration_s, 'performed_at', performed_at, 'set_id', id) AS r
             FROM mine WHERE duration_s > 0 ORDER BY exercise_id, machine_key, duration_s DESC, performed_at)
          SELECT coalesce(json_agg(json_build_object(
-                    'exercise', e.name, 'machine', m.machine, 'heaviest_set', h.r, 'best_e1rm', b.r,
+                    'exercise', e.name, 'machine', m.machine, 'variant', m.variant, 'heaviest_set', h.r, 'best_e1rm', b.r,
                     'max_reps_by_weight_kg', ra.r, 'best_volume_workout', vo.r,
                     'longest_distance', ld.r, 'best_pace', bp.r, 'longest_duration', lu.r) ORDER BY e.name, m.machine_key), '[]'::json)
          FROM exercise e
-         JOIN (SELECT exercise_id, machine_key, min(machine) AS machine FROM mine GROUP BY exercise_id, machine_key) m ON m.exercise_id = e.id
+         JOIN (SELECT exercise_id, machine_key, min(machine) AS machine, min(variant) AS variant FROM mine
+               GROUP BY exercise_id, machine_key) m ON m.exercise_id = e.id
          LEFT JOIN heaviest h ON h.exercise_id = e.id AND h.machine_key = m.machine_key
          LEFT JOIN best_e1rm b ON b.exercise_id = e.id AND b.machine_key = m.machine_key
          LEFT JOIN reps_at ra ON ra.exercise_id = e.id AND ra.machine_key = m.machine_key

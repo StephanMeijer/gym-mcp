@@ -1429,3 +1429,98 @@ async fn unilateral_counts_per_side(pool: PgPool) {
         .unwrap();
     assert_eq!(pr[0]["best_e1rm"]["weight_kg"], 60.0);
 }
+
+async fn past_fly(app: &App, days: i64, kg: f64, variant: Option<&str>) -> Value {
+    let start = Utc::now() - chrono::Duration::days(days);
+    let w = workout::add_past(
+        app,
+        ME,
+        a(json!({"gym": "ndsm", "started_at": start.to_rfc3339(),
+                 "finished_at": (start + chrono::Duration::hours(1)).to_rfc3339()})),
+    )
+    .await
+    .unwrap();
+    let mut args = json!({"exercise": "cable fly", "workout_id": w["workout_id"],
+                          "sets": [{"reps": 10, "weight_kg": kg,
+                                    "performed_at": (start + chrono::Duration::minutes(10)).to_rfc3339()}]});
+    if let Some(v) = variant {
+        args["variant"] = json!(v);
+    }
+    workout::set_add(app, ME, a(args)).await.unwrap()
+}
+
+#[sqlx::test]
+async fn variant_defaults_per_gym_and_splits_history(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+
+    let given = past_fly(&app, 4, 50.0, Some(" Wide grip ")).await;
+    assert_eq!(given["variant"], "Wide grip");
+    assert_eq!(given["variant_source"], "given");
+    let inherited = past_fly(&app, 3, 55.0, None).await;
+    assert_eq!(inherited["variant"], "Wide grip");
+    assert_eq!(inherited["variant_source"], "last_used_here");
+    let standard = past_fly(&app, 2, 70.0, Some("")).await;
+    assert!(standard["variant"].is_null());
+    assert_eq!(standard["variant_source"], "none");
+    past_fly(&app, 1, 60.0, Some("neutral grip")).await;
+
+    let rec = search::personal_records(&app, ME, a(json!({"exercise": "cable fly"})))
+        .await
+        .unwrap();
+    let by_variant: Vec<(Value, Value)> = rec
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["variant"].clone(), r["heaviest_set"]["weight_kg"].clone()))
+        .collect();
+    assert_eq!(
+        by_variant,
+        [
+            (Value::Null, json!(70)),
+            (json!("neutral grip"), json!(60)),
+            (json!("Wide grip"), json!(55))
+        ]
+    );
+
+    let series = search::progress(
+        &app,
+        ME,
+        a(json!({"exercise": "cable fly", "metric": "top_weight", "bucket": "day"})),
+    )
+    .await
+    .unwrap();
+    let variants: Vec<Value> = series["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["variant"].clone())
+        .collect();
+    assert_eq!(variants.iter().filter(|v| **v == "Wide grip").count(), 2);
+    assert_eq!(variants.len(), 4);
+    let neutral = search::set_search(&app, ME, a(json!({"variant": "neutral"})))
+        .await
+        .unwrap();
+    assert_eq!(neutral.as_array().unwrap().len(), 1);
+    assert_eq!(neutral[0]["weight_kg"], 60.0);
+
+    // The last variant here is neutral, so last_session is the neutral session, not the heavier standard one.
+    let ov = search::training_overview(&app, ME, a(json!({"gym": "ndsm"})))
+        .await
+        .unwrap();
+    let fly = ov["overview"]["exercises"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "Cable fly")
+        .unwrap();
+    assert_eq!(fly["variant_here"], "neutral grip");
+    assert_eq!(fly["last_session"]["sets"][0]["weight_kg"], 60.0);
+    assert_eq!(fly["variants_used"], json!(["neutral grip", "Wide grip"]));
+
+    let set_id = neutral[0]["set_id"].clone();
+    let w = workout::set_update(&app, ME, a(json!({"set_id": set_id, "variant": ""})))
+        .await
+        .unwrap();
+    assert!(w["exercises"][0]["sets"][0]["variant"].is_null());
+}
