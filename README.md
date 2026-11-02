@@ -13,7 +13,10 @@ Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles
 | **Gym equipment** | `present` (+ quantity, available weights, max load) or `absent`. **No row = unknown** |
 | **Exercise** | needs *all* of its equipment (none = bodyweight), plus muscle groups from a fixed list |
 | **Workout** | one visit to one gym; at most one open at a time |
-| **Set** | reps / weight / duration; `performed_at` (when it happened) is separate from `logged_at` |
+| **Set** | reps / weight / duration, optional effort (`rpe` 1–10 in half steps) and `rest_s`; `performed_at` (when it happened) is separate from `logged_at` |
+| **Settings** | timezone and training `goal` (strength / hypertrophy / endurance / general) |
+
+**Recommendations.** `training_overview` gives Claude, per exercise doable at the gym, the whole last session (reps, weight, RPE, rest) plus your goal, so it can suggest progression. `set_add` warns, but still logs, when a weight isn't one the gym's rack is recorded to have (e.g. 13 kg dumbbells) or exceeds a machine's recorded max.
 
 **Weights** are the number on the implement: per dumbbell or kettlebell; barbell = total including the bar; machine = the stack setting.
 
