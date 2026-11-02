@@ -26,6 +26,9 @@ Gym logbook. Typical flow:
 5. When the user leaves → workout_finish. Stale workouts close automatically.
 Descriptions: when creating exercises or equipment, add a short description (what it looks like, how it's set up) \
 so it can be recognized from a photo later; equipment description = the kind, gym_equipment_set notes = that gym's unit.
+Effort: when the user says how a set felt, record rpe (1-10; \"2 left in the tank\" = RPE 8, \"to failure\" = 10) and rest_s \
+if mentioned. Ask for their goal once (settings_update goal). Recommend progression from goal + last_session in \
+training_overview: e.g. all sets at RPE <= 7 → add weight or reps. If set_add returns warnings, tell the user.
 Weights: the number on the implement (per dumbbell/kettlebell); barbell = total incl. bar; machine = stack setting. Convert lb to kg.
 Times: answers are in the user's timezone; inputs may be RFC 3339 or local (\"2026-11-02 19:40\").
 Photos stay with you; send only text.";
