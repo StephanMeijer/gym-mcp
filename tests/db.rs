@@ -1518,6 +1518,19 @@ async fn variant_defaults_per_gym_and_splits_history(pool: PgPool) {
     assert_eq!(fly["last_session"]["sets"][0]["weight_kg"], 60.0);
     assert_eq!(fly["variants_used"], json!(["neutral grip", "Wide grip"]));
 
+    // Never done at Basic-Fit, so last_session is the newest session anywhere, grip and all.
+    let ov = search::training_overview(&app, ME, a(json!({"gym": "basic-fit"})))
+        .await
+        .unwrap();
+    let fly = ov["overview"]["exercises"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "Cable fly")
+        .unwrap();
+    assert!(fly["variant_here"].is_null());
+    assert_eq!(fly["last_session"]["sets"][0]["weight_kg"], 60.0);
+
     let set_id = neutral[0]["set_id"].clone();
     let w = workout::set_update(&app, ME, a(json!({"set_id": set_id, "variant": ""})))
         .await
