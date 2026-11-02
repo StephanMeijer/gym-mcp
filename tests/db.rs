@@ -424,6 +424,10 @@ async fn gym_append_adds_a_line(pool: PgPool) {
     assert!(err.unwrap_err().to_string().contains("not both"));
     let err = up(json!({"gym": "Basic-Fit Zuid", "notes": "x", "notes_append": "y"})).await;
     assert!(err.is_err());
+    let err = up(json!({"gym": "Basic-Fit Zuid", "equipment_append": "  "})).await;
+    assert!(err.unwrap_err().to_string().contains("empty"));
+    let err = up(json!({"gym": "Basic-Fit Zuid", "notes_append": ""})).await;
+    assert!(err.unwrap_err().to_string().contains("empty"));
     let g = setup::gym_get(&app, ME, a(json!({"gym": "Basic-Fit Zuid"})))
         .await
         .unwrap();

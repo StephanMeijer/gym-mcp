@@ -246,6 +246,13 @@ pub async fn gym_update(app: &App, owner: &str, a: GymUpdateArgs) -> AppResult<V
     if a.notes.is_some() && a.notes_append.is_some() {
         return Err(user_err("pass notes or notes_append, not both"));
     }
+    if [&a.equipment_append, &a.notes_append]
+        .into_iter()
+        .flatten()
+        .any(|s| s.trim().is_empty())
+    {
+        return Err(user_err("equipment_append and notes_append can't be empty"));
+    }
     let mut tx = db::begin(app, owner).await?;
     let id = resolve::id(&mut tx, owner, Kind::Gym, &a.gym).await?;
     sqlx::query(
