@@ -1,4 +1,4 @@
-//! Body measurements over time (body weight for now).
+//! Body measurements over time: body weight and height.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -9,6 +9,7 @@ use crate::db::{self, App, AppResult, Tx, user_err};
 use crate::workout::{not_future, now, parse_time};
 
 const KG_PER_LB: f64 = 0.453_592_37;
+const CM_PER_IN: f64 = 2.54;
 
 /// The JSON of one `measurement` row.
 const ROW: &str = "json_build_object('id', id, 'kind', kind, 'value', value, 'unit', unit,
@@ -19,12 +20,22 @@ const ROW: &str = "json_build_object('id', id, 'kind', kind, 'value', value, 'un
 pub enum MeasurementKind {
     #[default]
     BodyWeight,
+    /// Body height ("length").
+    Height,
 }
 
 impl MeasurementKind {
     fn as_str(self) -> &'static str {
         match self {
             MeasurementKind::BodyWeight => "body_weight",
+            MeasurementKind::Height => "height",
+        }
+    }
+
+    fn from_db(s: &str) -> Self {
+        match s {
+            "height" => MeasurementKind::Height,
+            _ => MeasurementKind::BodyWeight,
         }
     }
 
@@ -32,22 +43,35 @@ impl MeasurementKind {
     fn unit(self) -> &'static str {
         match self {
             MeasurementKind::BodyWeight => "kg",
+            MeasurementKind::Height => "cm",
         }
     }
 }
 
-#[derive(Deserialize, JsonSchema, Clone, Copy, Default)]
+#[derive(Deserialize, JsonSchema, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum Unit {
-    #[default]
     Kg,
     Lb,
+    Cm,
+    In,
 }
 
-fn to_kg(value: f64, unit: Unit) -> f64 {
-    match unit {
-        Unit::Kg => value,
-        Unit::Lb => value * KG_PER_LB,
+/// `value` in `unit` (default: the kind's own unit) converted to the kind's stored unit.
+fn convert(kind: MeasurementKind, value: f64, unit: Option<Unit>) -> AppResult<f64> {
+    use {MeasurementKind as K, Unit as U};
+    match (kind, unit) {
+        (_, None) | (K::BodyWeight, Some(U::Kg)) | (K::Height, Some(U::Cm)) => Ok(value),
+        (K::BodyWeight, Some(U::Lb)) => Ok(value * KG_PER_LB),
+        (K::Height, Some(U::In)) => Ok(value * CM_PER_IN),
+        _ => Err(user_err(format!(
+            "that unit doesn't fit {}; use {}",
+            kind.as_str(),
+            match kind {
+                K::BodyWeight => "kg or lb",
+                K::Height => "cm or in",
+            }
+        ))),
     }
 }
 
@@ -62,9 +86,8 @@ async fn measured_at(tx: &mut Tx, s: &Option<String>) -> AppResult<Option<chrono
 pub struct MeasurementAddArgs {
     /// The value in `unit` ("82.4", or 180 with unit lb).
     pub value: f64,
-    /// Unit of `value`; lb is converted to kg. Default kg.
-    #[serde(default)]
-    pub unit: Unit,
+    /// Unit of `value`: kg/lb for body_weight (default kg), cm/in for height (default cm); stored as kg / cm.
+    pub unit: Option<Unit>,
     /// Default body_weight.
     #[serde(default)]
     pub kind: MeasurementKind,
@@ -85,7 +108,7 @@ pub async fn measurement_add(app: &App, owner: &str, a: MeasurementAddArgs) -> A
     )))
     .bind(owner)
     .bind(a.kind.as_str())
-    .bind(to_kg(a.value, a.unit))
+    .bind(convert(a.kind, a.value, a.unit)?)
     .bind(a.kind.unit())
     .bind(at)
     .bind(&a.notes)
@@ -128,15 +151,21 @@ pub async fn measurement_list(app: &App, owner: &str, a: MeasurementListArgs) ->
 pub struct MeasurementUpdateArgs {
     pub id: i64,
     pub value: Option<f64>,
-    /// Unit of `value`; lb is converted to kg. Default kg.
-    #[serde(default)]
-    pub unit: Unit,
+    /// Unit of `value`; default the measurement's own (kg / cm).
+    pub unit: Option<Unit>,
     pub measured_at: Option<String>,
     pub notes: Option<String>,
 }
 
 pub async fn measurement_update(app: &App, owner: &str, a: MeasurementUpdateArgs) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM measurement WHERE id = $1 AND owner_sub = $2")
+        .bind(a.id)
+        .bind(owner)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let kind = MeasurementKind::from_db(&kind.ok_or_else(|| user_err(format!("no measurement with id {}", a.id)))?);
+    let value = a.value.map(|v| convert(kind, v, a.unit)).transpose()?;
     let at = measured_at(&mut tx, &a.measured_at).await?;
     let v: Option<Value> = sqlx::query_scalar(AssertSqlSafe(format!(
         "UPDATE measurement SET value = coalesce($3, value), measured_at = coalesce($4, measured_at),
@@ -145,7 +174,7 @@ pub async fn measurement_update(app: &App, owner: &str, a: MeasurementUpdateArgs
     )))
     .bind(a.id)
     .bind(owner)
-    .bind(a.value.map(|v| to_kg(v, a.unit)))
+    .bind(value)
     .bind(at)
     .bind(&a.notes)
     .fetch_optional(&mut *tx)
@@ -197,8 +226,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lb_converts_to_kg() {
-        assert_eq!(to_kg(80.0, Unit::Kg), 80.0);
-        assert!((to_kg(180.0, Unit::Lb) - 81.646_627).abs() < 1e-6);
+    fn units_convert_per_kind() {
+        let (w, h) = (MeasurementKind::BodyWeight, MeasurementKind::Height);
+        assert_eq!(convert(w, 80.0, None).ok(), Some(80.0));
+        assert!((convert(w, 180.0, Some(Unit::Lb)).ok().unwrap() - 81.646_627).abs() < 1e-6);
+        assert_eq!(convert(h, 183.0, None).ok(), Some(183.0));
+        assert!((convert(h, 72.0, Some(Unit::In)).ok().unwrap() - 182.88).abs() < 1e-9);
+        assert!(convert(h, 80.0, Some(Unit::Kg)).is_err());
+        assert!(convert(w, 183.0, Some(Unit::Cm)).is_err());
     }
 }

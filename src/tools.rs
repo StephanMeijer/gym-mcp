@@ -50,7 +50,8 @@ at this gym; check machine_source in the result. Note in the gym's equipment tex
 Cardio: exercises with kind cardio. \"20 min bike, level 8, 7.5 km\" → one set with duration_s 1200, distance_m 7500, \
 intensity \"level 8\". progress/personal_records/set_search report distance and pace (seconds per km).
 Body weight: whenever the user mentions their weight (\"82.4 this morning\"), measurement_add (unit lb if they gave pounds). \
-training_overview.body_weight has the latest and its 4-week change; use it to judge a cut or bulk.
+training_overview.body_weight has the latest and its 4-week change; use it to judge a cut or bulk. \
+If they mention their height (\"lengte\"), measurement_add kind height (cm; unit in for inches).
 Times: answers are in the user's timezone; inputs may be RFC 3339 or local (\"2026-11-02 19:40\").
 Photos stay with you; send only text.";
 
@@ -317,7 +318,7 @@ impl GymServer {
 
     // ----- measurements -----
     #[tool(
-        description = "Log a body measurement (body weight; lb is converted to kg), optionally at a past measured_at.",
+        description = "Log a body measurement: body weight (lb is converted to kg) or height (in is converted to cm), optionally at a past measured_at.",
         annotations(
             title = "Log measurement",
             read_only_hint = false,

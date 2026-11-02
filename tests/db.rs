@@ -1120,3 +1120,42 @@ async fn measurements_round_trip(pool: PgPool) {
     let msg = user_msg(measurement::measurement_add(&app, ME, a(json!({"value": 0.0}))).await);
     assert!(msg.contains("invalid value"), "{msg}");
 }
+
+#[sqlx::test]
+async fn height_is_stored_in_cm_and_kept_apart(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    measurement::measurement_add(&app, ME, a(json!({"value": 80.0})))
+        .await
+        .unwrap();
+    let h = measurement::measurement_add(&app, ME, a(json!({"kind": "height", "value": 72, "unit": "in"})))
+        .await
+        .unwrap();
+    assert_eq!(h["kind"], "height");
+    assert_eq!(h["unit"], "cm");
+    assert!((h["value"].as_f64().unwrap() - 182.88).abs() < 1e-9, "{h}");
+
+    let up = measurement::measurement_update(&app, ME, a(json!({"id": h["id"], "value": 183})))
+        .await
+        .unwrap();
+    assert_eq!(up["value"], 183.0, "default unit is the measurement's own (cm)");
+    let msg =
+        user_msg(measurement::measurement_update(&app, ME, a(json!({"id": h["id"], "value": 80, "unit": "kg"}))).await);
+    assert!(msg.contains("cm or in"), "{msg}");
+
+    let heights = measurement::measurement_list(&app, ME, a(json!({"kind": "height"})))
+        .await
+        .unwrap();
+    assert_eq!(heights.as_array().unwrap().len(), 1);
+    assert_eq!(
+        measurement::measurement_list(&app, ME, a(json!({}))).await.unwrap()[0]["kind"],
+        "body_weight"
+    );
+    let ov = search::training_overview(&app, ME, a(json!({"gym": "ndsm"})))
+        .await
+        .unwrap();
+    assert_eq!(
+        ov["overview"]["body_weight"]["latest_kg"], 80.0,
+        "height doesn't count as body weight"
+    );
+}
