@@ -33,6 +33,10 @@ Effort: when the user says how a set felt, record rpe (1-10; \"2 left in the tan
 if mentioned. Ask for their goal once (settings_update goal). Recommend progression from goal + last_session in \
 training_overview: e.g. all sets at RPE <= 7 → add weight or reps. If a logged weight doesn't fit the gym's equipment text, mention it.
 Weights: the number on the implement (per dumbbell/kettlebell); barbell = total incl. bar; machine = stack setting. Convert lb to kg.
+Machines: stack weights only compare within one brand. Pass set_add machine (brand/model, read off the photo when \
+visible; reuse a name from machines_used in training_overview). Omitted, it reuses the last machine for that exercise \
+at this gym; check machine_source in the result. Note in the gym's equipment text which brands it has \
+(\"leg press: Technogym + Hammer Strength\"). last_session in training_overview is from the same machine.
 Cardio: exercises with kind cardio. \"20 min bike, level 8, 7.5 km\" → one set with duration_s 1200, distance_m 7500, \
 intensity \"level 8\". progress/personal_records/set_search report distance and pace (seconds per km).
 Times: answers are in the user's timezone; inputs may be RFC 3339 or local (\"2026-11-02 19:40\").

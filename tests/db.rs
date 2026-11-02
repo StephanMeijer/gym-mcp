@@ -717,3 +717,124 @@ async fn migration_maps_coarse_muscle_groups(pool: PgPool) {
         ]
     );
 }
+
+/// A finished workout `days` ago at `gym` with one leg press set; returns set_add's result.
+async fn past_leg_press(app: &App, gym: &str, days: i64, kg: f64, machine: Option<&str>) -> Value {
+    let start = Utc::now() - chrono::Duration::days(days);
+    let w = workout::add_past(
+        app,
+        ME,
+        a(json!({"gym": gym, "started_at": start.to_rfc3339(),
+                 "finished_at": (start + chrono::Duration::hours(1)).to_rfc3339()})),
+    )
+    .await
+    .unwrap();
+    let mut args = json!({"exercise": "leg press", "workout_id": w["workout_id"],
+                          "sets": [{"reps": 10, "weight_kg": kg,
+                                    "performed_at": (start + chrono::Duration::minutes(10)).to_rfc3339()}]});
+    if let Some(m) = machine {
+        args["machine"] = json!(m);
+    }
+    workout::set_add(app, ME, a(args)).await.unwrap()
+}
+
+#[sqlx::test]
+async fn machine_defaults_per_gym_and_groups_history(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    setup::gym_create(&app, ME, a(json!({"name": "Trainmore Centrum"})))
+        .await
+        .unwrap();
+
+    past_leg_press(&app, "centrum", 5, 90.0, Some("Technogym")).await;
+    let given = past_leg_press(&app, "ndsm", 4, 100.0, Some(" Technogym ")).await;
+    assert_eq!(
+        (given["machine"].clone(), given["machine_source"].clone()),
+        (json!("Technogym"), json!("given"))
+    );
+    let inherited = past_leg_press(&app, "ndsm", 3, 110.0, None).await;
+    assert_eq!(inherited["machine"], "Technogym");
+    assert_eq!(inherited["machine_source"], "last_used_here");
+    let elsewhere = past_leg_press(&app, "basic-fit", 2, 80.0, None).await;
+    assert!(elsewhere["machine"].is_null());
+    assert_eq!(elsewhere["machine_source"], "none");
+    past_leg_press(&app, "ndsm", 1, 60.0, Some("matrix")).await;
+
+    // At Centrum the machine is Technogym, so last_session is NDSM's Technogym session, not the newer Matrix or Basic-Fit one.
+    let ov = search::training_overview(&app, ME, a(json!({"gym": "centrum"})))
+        .await
+        .unwrap();
+    let lp = ov["overview"]["exercises"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "Leg press")
+        .unwrap();
+    assert_eq!(lp["machine_here"], "Technogym");
+    assert_eq!(lp["last_session"]["gym"], "Trainmore NDSM");
+    assert_eq!(lp["last_session"]["sets"][0]["weight_kg"], 110.0);
+    assert_eq!(lp["machines_used"], json!(["matrix", "Technogym"]));
+    // At NDSM the latest machine is Matrix.
+    let ov = search::training_overview(&app, ME, a(json!({"gym": "ndsm"})))
+        .await
+        .unwrap();
+    let lp = ov["overview"]["exercises"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "Leg press")
+        .unwrap();
+    assert_eq!(lp["last_session"]["sets"][0]["weight_kg"], 60.0);
+
+    let rec = search::personal_records(&app, ME, a(json!({"exercise": "leg press"})))
+        .await
+        .unwrap();
+    let by_machine: Vec<(Value, Value)> = rec
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["machine"].clone(), r["heaviest_set"]["weight_kg"].clone()))
+        .collect();
+    assert_eq!(
+        by_machine,
+        [
+            (json!(null), json!(80)),
+            (json!("matrix"), json!(60)),
+            (json!("Technogym"), json!(110))
+        ]
+    );
+
+    let series = search::progress(
+        &app,
+        ME,
+        a(json!({"exercise": "leg press", "metric": "top_weight", "bucket": "day"})),
+    )
+    .await
+    .unwrap();
+    let mut machines: Vec<Value> = series["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["machine"].clone())
+        .collect();
+    machines.dedup();
+    assert_eq!(machines, [json!(null), json!("matrix"), json!("Technogym")]);
+    let techno = search::progress(
+        &app,
+        ME,
+        a(json!({"exercise": "leg press", "metric": "top_weight", "bucket": "day", "machine": "techno"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(techno["series"].as_array().unwrap().len(), 3);
+
+    let found = search::set_search(&app, ME, a(json!({"machine": "TECHNO"})))
+        .await
+        .unwrap();
+    assert_eq!(found.as_array().unwrap().len(), 3);
+    let set_id = found[0]["set_id"].as_i64().unwrap();
+    let w = workout::set_update(&app, ME, a(json!({"set_id": set_id, "machine": ""})))
+        .await
+        .unwrap();
+    assert!(w["exercises"][0]["sets"][0]["machine"].is_null());
+}
