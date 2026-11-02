@@ -11,7 +11,7 @@ use sqlx::{Postgres, QueryBuilder};
 
 use crate::db::{self, App, AppResult, Tx, user_err};
 use crate::resolve::{self, Kind};
-use crate::setup::{MUSCLE_GROUPS, expand_opt};
+use crate::setup::{self, MUSCLE_GROUPS, expand_opt};
 use crate::workout;
 
 const E1RM: &str = "(s.weight_kg * (1 + s.reps / 30.0))"; // Epley
@@ -85,7 +85,6 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
          SELECT json_build_object(
             'gym', (SELECT json_build_object('id', id, 'name', name, 'equipment', NULLIF(equipment, '')) FROM gym WHERE id = $2),
             'today', current_date,
-            'goal', (SELECT goal FROM user_settings WHERE owner_sub = $1),
             'exercises', coalesce((
                 SELECT json_agg(json_build_object(
                     'id', e.id, 'name', e.name, 'kind', e.kind, 'muscle_groups', e.muscle_groups,
@@ -115,6 +114,10 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
     .fetch_one(&mut *tx)
     .await?;
     v["muscle_groups"] = muscle_groups_overview(&mut tx, owner).await?;
+    let settings = setup::settings_json(&mut tx, owner).await?;
+    for k in ["goal", "goals_notes", "priority_muscle_groups", "limitations"] {
+        v[k] = settings[k].clone();
+    }
     tx.commit().await?;
     Ok(json!({"overview": v, "closed_stale": closed}))
 }

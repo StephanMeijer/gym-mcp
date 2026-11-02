@@ -12,9 +12,9 @@ Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles
 | **Exercise** | `kind` (strength or cardio), primary and secondary muscle groups from a fixed list (`back`, `shoulders`, `legs`, `arms` work as filters), `equipment` it needs (free text; empty = bodyweight) and a description |
 | **Workout** | one visit to one gym; at most one open at a time |
 | **Set** | reps / weight / duration, cardio `distance_m` and free-text `intensity` ("level 12"), the `machine` it was done on (brand; machine weights only compare within one brand, and it defaults to the last one used for that exercise at that gym), optional effort (`rpe` 1–10 in half steps) and `rest_s`; `performed_at` (when it happened) is separate from `logged_at` |
-| **Settings** | timezone and training `goal` (strength / hypertrophy / endurance / general) |
+| **Settings** | timezone, training `goal` (strength / hypertrophy / endurance / general), free-text `goals_notes` (plans, events, dates), `priority_muscle_groups` and `limitations` (injuries to work around) |
 
-**Recommendations.** `training_overview` gives Claude the gym's equipment text and, per exercise, its equipment text and the whole last session (reps, weight, RPE, rest), plus your goal. Claude judges what's possible at the gym by reading the two texts, and suggests progression from the last session.
+**Recommendations.** `training_overview` gives Claude the gym's equipment text and, per exercise, its equipment text and the whole last session (reps, weight, RPE, rest), plus your goal, goals notes, priority muscle groups and limitations. Claude judges what's possible at the gym by reading the two texts, and suggests progression from the last session.
 
 **Weights** are the number on the implement: per dumbbell or kettlebell; barbell = total including the bar; machine = the stack setting.
 

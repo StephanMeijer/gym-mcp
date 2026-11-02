@@ -345,7 +345,7 @@ async fn effort_rest_and_goal_feed_recommendations(pool: PgPool) {
         .unwrap();
     assert_eq!(s["goal"], "hypertrophy");
     assert_eq!(s["timezone"], "Europe/Amsterdam", "goal-only update keeps the timezone");
-    assert!(user_msg(setup::settings_update(&app, ME, a(json!({}))).await).contains("timezone and/or goal"));
+    assert!(user_msg(setup::settings_update(&app, ME, a(json!({}))).await).contains("at least one setting"));
 
     workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
     let r = workout::set_add(
@@ -998,4 +998,53 @@ async fn muscle_group_volume_over_any_period(pool: PgPool) {
         let m = user_msg(vol(args).await);
         assert!(m.contains(msg), "{m}");
     }
+}
+
+#[sqlx::test]
+async fn settings_profile_round_trip(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    let s = setup::settings_update(
+        &app,
+        ME,
+        a(json!({"goal": "hypertrophy", "goals_notes": " Hyrox on 14 March ",
+                 "priority_muscle_groups": ["back", "lats", "calves"],
+                 "limitations": "left shoulder: no overhead pressing"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(s["goals_notes"], "Hyrox on 14 March");
+    assert_eq!(
+        s["priority_muscle_groups"],
+        json!(["lats", "upper_back", "lower_back", "calves"])
+    );
+    assert_eq!(s["limitations"], "left shoulder: no overhead pressing");
+
+    let got = setup::settings_get(&app, ME).await.unwrap();
+    let ov = search::training_overview(&app, ME, a(json!({"gym": "ndsm"})))
+        .await
+        .unwrap();
+    for k in ["goal", "goals_notes", "priority_muscle_groups", "limitations"] {
+        assert_eq!(got[k], s[k], "settings_get {k}");
+        assert_eq!(ov["overview"][k], s[k], "overview {k}");
+    }
+
+    let s = setup::settings_update(&app, ME, a(json!({"limitations": "none"})))
+        .await
+        .unwrap();
+    assert_eq!(s["limitations"], "none");
+    assert_eq!(s["goals_notes"], "Hyrox on 14 March", "partial update keeps the rest");
+    assert_eq!(s["goal"], "hypertrophy");
+
+    let s = setup::settings_update(&app, ME, a(json!({"goals_notes": "", "priority_muscle_groups": []})))
+        .await
+        .unwrap();
+    assert!(
+        s["goals_notes"].is_null() && s["priority_muscle_groups"].is_null(),
+        "{s}"
+    );
+    assert_eq!(s["limitations"], "none");
+
+    let bad = user_msg(setup::settings_update(&app, ME, a(json!({"priority_muscle_groups": ["pecs"]}))).await);
+    assert!(bad.contains("unknown muscle group"), "{bad}");
 }
