@@ -1,6 +1,6 @@
 # gym-mcp
 
-A remote MCP server that turns Claude or ChatGPT into your gym logbook. You say *"I arrived at the NDSM Trainmore"*, send a photo plus *"12 on 13kg"*, and it logs the workout. Ask *"what should I do next?"* and it recommends from your history and the equipment that gym is known to have.
+A remote MCP server that turns Claude or ChatGPT into your gym logbook. You say *"I arrived at the NDSM Trainmore"*, send a photo plus *"12 on 13kg"*, and it logs the workout. Ask *"what should I do next?"* and it recommends from your history and what that gym has.
 
 Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles OAuth.
 
@@ -8,15 +8,13 @@ Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles
 
 | | |
 |---|---|
-| **Gym** | name + aliases; `inventory_complete` means unknown equipment counts as absent |
-| **Equipment** | a kind of gear (leg press, dumbbells, mat), with a category and a description |
-| **Gym equipment** | `present` (+ quantity, available weights, max load) or `absent`. **No row = unknown** |
-| **Exercise** | needs *all* of its equipment (none = bodyweight), plus muscle groups from a fixed list |
+| **Gym** | name + aliases, `equipment` (free text: "2 leg presses (max 300 kg), dumbbells 2–40 kg, no sled") and notes |
+| **Exercise** | muscle groups from a fixed list, `equipment` it needs (free text; empty = bodyweight) and a description |
 | **Workout** | one visit to one gym; at most one open at a time |
 | **Set** | reps / weight / duration, optional effort (`rpe` 1–10 in half steps) and `rest_s`; `performed_at` (when it happened) is separate from `logged_at` |
 | **Settings** | timezone and training `goal` (strength / hypertrophy / endurance / general) |
 
-**Recommendations.** `training_overview` gives Claude, per exercise doable at the gym, the whole last session (reps, weight, RPE, rest) plus your goal, so it can suggest progression. `set_add` warns, but still logs, when a weight isn't one the gym's rack is recorded to have (e.g. 13 kg dumbbells) or exceeds a machine's recorded max.
+**Recommendations.** `training_overview` gives Claude the gym's equipment text and, per exercise, its equipment text and the whole last session (reps, weight, RPE, rest), plus your goal. Claude judges what's possible at the gym by reading the two texts, and suggests progression from the last session.
 
 **Weights** are the number on the implement: per dumbbell or kettlebell; barbell = total including the bar; machine = the stack setting.
 
@@ -36,13 +34,13 @@ Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles
 
 | Group | Tools |
 |---|---|
-| Setup | `settings_get/update`, `gym_create/update/get/list`, `gym_equipment_set/forget`, `equipment_list/update`, `exercise_create/update/search` |
+| Setup | `settings_get/update`, `gym_create/update/get/list`, `exercise_create/update/search` |
 | Workout | `workout_start/finish/update/current/add_past`, `workout_list`, `set_add/update/delete` |
 | Analysis | `training_overview`, `search`, `set_search`, `progress`, `personal_records`, `exercise_alternatives` |
 
 Every tool carries MCP annotations, so clients can auto-approve reads and warn on deletes: a title, `readOnlyHint` (read tools run in a `READ ONLY` Postgres transaction, so the database enforces it), and `destructiveHint`/`idempotentHint` on the rest. All tools are `openWorldHint: false`, since they only touch this database.
 
-Wherever a tool takes a gym, exercise or equipment, you can give an id or a name. Names are matched in any word order and with typos tolerated ("trianmore ndsm"). An ambiguous or unknown name returns an error listing the candidates, so the model asks you instead of guessing.
+Wherever a tool takes a gym or exercise, you can give an id or a name. Names are matched in any word order and with typos tolerated ("trianmore ndsm"). An ambiguous or unknown name returns an error listing the candidates, so the model asks you instead of guessing.
 
 ## Run locally
 

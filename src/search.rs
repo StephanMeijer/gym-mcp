@@ -10,7 +10,7 @@ use sqlx::{Postgres, QueryBuilder};
 
 use crate::db::{self, App, AppResult, Tx, user_err};
 use crate::resolve::{self, Kind};
-use crate::setup::{AVAILABILITY_CTE, MUSCLE_GROUPS};
+use crate::setup::MUSCLE_GROUPS;
 use crate::workout;
 
 const E1RM: &str = "(s.weight_kg * (1 + s.reps / 30.0))"; // Epley
@@ -55,9 +55,8 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
         .await?
         .ok_or_else(|| user_err("no open workout; pass a gym"))?;
     let groups: Vec<String> = MUSCLE_GROUPS.iter().map(|s| s.to_string()).collect();
-    let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
-        "WITH {AVAILABILITY_CTE},
-         mine AS (SELECT s.* FROM workout_set s JOIN workout w ON w.id = s.workout_id WHERE w.owner_sub = $1),
+    let v: Value = sqlx::query_scalar(
+        "WITH mine AS (SELECT s.* FROM workout_set s JOIN workout w ON w.id = s.workout_id WHERE w.owner_sub = $1),
          stats AS (SELECT exercise_id, max(performed_at) AS last_done,
                           count(*) FILTER (WHERE performed_at >= now() - interval '30 days') AS sets_30d
                    FROM mine GROUP BY exercise_id),
@@ -71,20 +70,19 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
             WHERE s.workout_id = (SELECT m.workout_id FROM mine m WHERE m.exercise_id = s.exercise_id ORDER BY m.performed_at DESC LIMIT 1)
             GROUP BY s.exercise_id)
          SELECT json_build_object(
-            'gym', (SELECT json_build_object('id', id, 'name', name, 'inventory_complete', inventory_complete) FROM gym WHERE id = $2),
+            'gym', (SELECT json_build_object('id', id, 'name', name, 'equipment', NULLIF(equipment, '')) FROM gym WHERE id = $2),
             'today', current_date,
             'goal', (SELECT goal FROM user_settings WHERE owner_sub = $1),
             'exercises', coalesce((
                 SELECT json_agg(json_build_object(
-                    'id', e.id, 'name', e.name, 'muscle_groups', e.muscle_groups, 'availability', av.availability,
-                    'unknown_equipment', NULLIF(av.unknown_equipment, '{{}}'),
+                    'id', e.id, 'name', e.name, 'muscle_groups', e.muscle_groups, 'equipment', NULLIF(e.equipment, ''),
                     'last_done', st.last_done, 'days_since', current_date - st.last_done::date,
                     'last_session', ls.last, 'sets_last_30d', coalesce(st.sets_30d, 0))
-                    ORDER BY av.availability, st.last_done NULLS FIRST)
-                FROM exercise e JOIN avail av ON av.exercise_id = e.id
+                    ORDER BY st.last_done NULLS FIRST, e.name)
+                FROM exercise e
                 LEFT JOIN stats st ON st.exercise_id = e.id
                 LEFT JOIN last_session ls ON ls.exercise_id = e.id
-                WHERE av.availability <> 'unavailable'), '[]'::json),
+                WHERE e.owner_sub = $1), '[]'::json),
             'days_since_muscle_group', (
                 SELECT json_object_agg(mg, (SELECT current_date - max(s.performed_at)::date
                                             FROM mine s JOIN exercise e ON e.id = s.exercise_id WHERE mg = ANY(e.muscle_groups)))
@@ -93,7 +91,7 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                 SELECT json_agg(json_build_object('exercise', e.name, 'sets', t.n, 'muscle_groups', e.muscle_groups))
                 FROM (SELECT exercise_id, count(*) n FROM mine WHERE performed_at::date = current_date GROUP BY exercise_id) t
                 JOIN exercise e ON e.id = t.exercise_id), '[]'::json))"
-    )))
+    )
     .bind(owner)
     .bind(gym_id)
     .bind(&groups)
@@ -116,7 +114,7 @@ pub async fn search(app: &App, owner: &str, a: SearchArgs) -> AppResult<Value> {
     let lim = limit(a.limit.or(Some(20)));
     let mut tx = db::begin_read(app, owner).await?;
     let mut names = Vec::new();
-    for kind in [Kind::Gym, Kind::Exercise, Kind::Equipment] {
+    for kind in [Kind::Gym, Kind::Exercise] {
         let cands = resolve::candidates(&mut tx, owner, kind).await?;
         for (score, id, name) in resolve::rank(&a.query, &cands).into_iter().filter(|r| r.0 >= 0.5) {
             names.push(json!({"type": kind.table(), "id": id, "name": name, "score": (score.min(1.0) * 100.0).round() / 100.0}));
@@ -138,9 +136,13 @@ pub async fn search(app: &App, owner: &str, a: SearchArgs) -> AppResult<Value> {
             SELECT json_build_object('type', 'exercise', 'id', e.id, 'name', e.name, 'text', e.description, 'rank', ts_rank(e.description_tsv, q.q))
             FROM exercise e, q WHERE e.owner_sub = $1 AND e.description_tsv @@ q.q
             UNION ALL
-            SELECT json_build_object('type', 'equipment', 'id', eq.id, 'name', eq.name, 'text', eq.description,
-                                     'rank', ts_rank(eq.description_tsv, q.q))
-            FROM equipment eq, q WHERE eq.owner_sub = $1 AND eq.description_tsv @@ q.q
+            SELECT json_build_object('type', 'gym_equipment', 'id', g.id, 'name', g.name, 'text', g.equipment,
+                                     'rank', ts_rank(g.equipment_tsv, q.q))
+            FROM gym g, q WHERE g.owner_sub = $1 AND g.equipment_tsv @@ q.q
+            UNION ALL
+            SELECT json_build_object('type', 'exercise_equipment', 'id', e.id, 'name', e.name, 'text', e.equipment,
+                                     'rank', ts_rank(e.equipment_tsv, q.q))
+            FROM exercise e, q WHERE e.owner_sub = $1 AND e.equipment_tsv @@ q.q
             UNION ALL
             SELECT json_build_object('type', 'workout', 'id', w.id, 'started_at', w.started_at, 'text', w.notes, 'rank', ts_rank(w.notes_tsv, q.q))
             FROM workout w, q WHERE w.owner_sub = $1 AND w.notes_tsv @@ q.q
@@ -178,7 +180,7 @@ pub enum SetOrder {
 pub struct SetSearchArgs {
     pub exercise: Option<String>,
     pub muscle_group: Option<String>,
-    /// Only exercises that use this equipment.
+    /// Only exercises whose equipment text contains this, e.g. "dumbbell".
     pub equipment: Option<String>,
     pub gym: Option<String>,
     /// Inclusive. RFC 3339 or a local date/time ("2026-10-01").
@@ -199,7 +201,6 @@ pub struct SetSearchArgs {
 pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<Value> {
     let mut tx = db::begin_read(app, owner).await?;
     let exercise = opt_id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
-    let equipment = opt_id(&mut tx, owner, Kind::Equipment, &a.equipment).await?;
     let gym = opt_id(&mut tx, owner, Kind::Gym, &a.gym).await?;
 
     let mut q: QueryBuilder<Postgres> = QueryBuilder::new(format!(
@@ -218,10 +219,10 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
     if let Some(mg) = &a.muscle_group {
         q.push(" AND ").push_bind(mg.clone()).push(" = ANY(e.muscle_groups)");
     }
-    if let Some(id) = equipment {
-        q.push(" AND EXISTS (SELECT 1 FROM exercise_equipment ee WHERE ee.exercise_id = e.id AND ee.equipment_id = ")
-            .push_bind(id)
-            .push(")");
+    if let Some(eq) = &a.equipment {
+        q.push(" AND e.equipment ILIKE '%' || ")
+            .push_bind(eq.clone())
+            .push(" || '%'");
     }
     if let Some(id) = gym {
         q.push(" AND w.gym_id = ").push_bind(id);
@@ -400,29 +401,29 @@ pub async fn personal_records(app: &App, owner: &str, a: RecordsArgs) -> AppResu
 #[derive(Deserialize, JsonSchema)]
 pub struct AlternativesArgs {
     pub exercise: String,
-    /// Default: the gym of the open workout. Without either, availability is not checked.
+    /// Default: the gym of the open workout. Its equipment text is returned so you can judge what's possible there.
     pub gym: Option<String>,
 }
 
 pub async fn exercise_alternatives(app: &App, owner: &str, a: AlternativesArgs) -> AppResult<Value> {
     let mut tx = db::begin_read(app, owner).await?;
     let exercise = resolve::id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
-    let gym = gym_or_current(&mut tx, owner, &a.gym).await?.unwrap_or(-1);
-    let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
-        "WITH {AVAILABILITY_CTE},
-         base AS (SELECT muscle_groups FROM exercise WHERE id = $3)
-         SELECT coalesce(json_agg(json_build_object(
+    let gym = gym_or_current(&mut tx, owner, &a.gym).await?;
+    let v: Value = sqlx::query_scalar(
+        "WITH base AS (SELECT muscle_groups FROM exercise WHERE id = $3)
+         SELECT json_build_object(
+            'gym', (SELECT json_build_object('id', id, 'name', name, 'equipment', NULLIF(equipment, ''))
+                    FROM gym WHERE id = $2 AND owner_sub = $1),
+            'alternatives', coalesce((
+                SELECT json_agg(json_build_object(
                     'id', x.id, 'name', x.name, 'muscle_groups', x.muscle_groups, 'shared_muscle_groups', x.shared,
-                    'availability', x.availability, 'unknown_equipment', NULLIF(x.unknown_equipment, '{{}}'))
-                ORDER BY cardinality(x.shared) DESC, x.availability, x.name), '[]'::json)
-         FROM (
-            SELECT e.id, e.name, e.muscle_groups, av.availability, av.unknown_equipment,
-                   ARRAY(SELECT unnest(e.muscle_groups) INTERSECT SELECT unnest(base.muscle_groups)) AS shared
-            FROM exercise e CROSS JOIN base
-            LEFT JOIN avail av ON av.exercise_id = e.id
-            WHERE e.owner_sub = $1 AND e.id <> $3 AND e.muscle_groups && base.muscle_groups
-              AND ($2 = -1 OR av.availability <> 'unavailable')) x"
-    )))
+                    'equipment', NULLIF(x.equipment, '')) ORDER BY cardinality(x.shared) DESC, x.name)
+                FROM (
+                    SELECT e.id, e.name, e.muscle_groups, e.equipment,
+                           ARRAY(SELECT unnest(e.muscle_groups) INTERSECT SELECT unnest(base.muscle_groups)) AS shared
+                    FROM exercise e CROSS JOIN base
+                    WHERE e.owner_sub = $1 AND e.id <> $3 AND e.muscle_groups && base.muscle_groups) x), '[]'::json))",
+    )
     .bind(owner)
     .bind(gym)
     .bind(exercise)

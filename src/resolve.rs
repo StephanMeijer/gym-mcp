@@ -10,7 +10,6 @@ use crate::db::{AppResult, Tx, user_err};
 pub enum Kind {
     Gym,
     Exercise,
-    Equipment,
 }
 
 impl Kind {
@@ -18,7 +17,6 @@ impl Kind {
         match self {
             Kind::Gym => "gym",
             Kind::Exercise => "exercise",
-            Kind::Equipment => "equipment",
         }
     }
 }
@@ -157,7 +155,6 @@ fn create_hint(kind: Kind) -> &'static str {
     match kind {
         Kind::Gym => "gym_create",
         Kind::Exercise => "exercise_create",
-        Kind::Equipment => "gym_equipment_set",
     }
 }
 
