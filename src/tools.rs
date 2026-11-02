@@ -55,7 +55,10 @@ Grip or variant (neutral grip, wide, seated, incline 30°): pass set_add variant
 Omitted, it reuses the last variant for that exercise at this gym (check variant_source); \"\" = standard. \
 History, records and last_session are split per variant, like per machine.
 Cardio: exercises with kind cardio. \"20 min bike, level 8, 7.5 km\" → one set with duration_s 1200, distance_m 7500, \
-intensity \"level 8\". progress/personal_records/set_search report distance and pace (seconds per km).
+intensity \"level 8\". progress/personal_records/set_search report distance and pace (seconds per km). \
+Read average/max heart rate, calories, average/max incline and average/max speed off the machine's screen or photo and pass \
+them on the set (avg_hr, max_hr, calories, avg_incline_pct, max_incline_pct, avg_speed, max_speed; speed_unit mph when \
+the screen shows mph), not in notes or intensity. progress charts avg_hr, avg_speed and calories.
 Body weight: whenever the user mentions their weight (\"82.4 this morning\"), measurement_add (unit lb if they gave pounds). \
 training_overview.body_weight has the latest and its 4-week change; use it to judge a cut or bulk. \
 If they mention their height (\"lengte\"), measurement_add kind body_height (cm; unit in for inches). \

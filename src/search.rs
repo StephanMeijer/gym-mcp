@@ -101,6 +101,9 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                        'gym', (SELECT name FROM gym WHERE id = min(s.gym_id)),
                        'sets', json_agg(json_build_object('reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
                                                           'rpe', s.rpe, 'rest_s', s.rest_s, 'distance_m', s.distance_m,
+                                                          'avg_hr', s.avg_hr, 'max_hr', s.max_hr, 'calories', s.calories,
+                                                          'avg_incline_pct', s.avg_incline_pct, 'max_incline_pct', s.max_incline_pct,
+                                                          'avg_speed_kmh', s.avg_speed_kmh, 'max_speed_kmh', s.max_speed_kmh,
                                                           'intensity', NULLIF(s.intensity, ''), 'machine', s.machine,
                                                           'variant', s.variant, 'unilateral', s.unilateral, 'load_basis', s.load_basis)
                                                           ORDER BY s.performed_at)) AS last
@@ -381,6 +384,9 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
         "SELECT json_build_object('set_id', s.id, 'workout_id', w.id, 'gym', g.name, 'exercise', e.name,
                 'performed_at', s.performed_at, 'reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
                 'rpe', s.rpe, 'rest_s', s.rest_s, 'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
+                'avg_hr', s.avg_hr, 'max_hr', s.max_hr, 'calories', s.calories,
+                'avg_incline_pct', s.avg_incline_pct, 'max_incline_pct', s.max_incline_pct,
+                'avg_speed_kmh', s.avg_speed_kmh, 'max_speed_kmh', s.max_speed_kmh,
                 'set_type', s.set_type, 'unilateral', s.unilateral, 'load_basis', s.load_basis,
                 'machine', s.machine, 'variant', s.variant, 'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
          FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN gym g ON g.id = w.gym_id
@@ -475,6 +481,12 @@ pub enum Metric {
     Duration,
     /// Cardio: best (lowest) seconds per km.
     Pace,
+    /// Cardio: average of the sets' average heart rate, bpm.
+    AvgHr,
+    /// Cardio: average of the sets' average speed, km/h.
+    AvgSpeed,
+    /// Cardio: total kcal.
+    Calories,
 }
 
 #[derive(Deserialize, JsonSchema, Clone, Copy, Default)]
@@ -520,6 +532,9 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
         Metric::Distance => "sum(s.distance_m)".to_owned(),
         Metric::Duration => "sum(s.duration_s)".to_owned(),
         Metric::Pace => format!("round(min({PACE})::numeric)"),
+        Metric::AvgHr => "round(avg(s.avg_hr))".to_owned(),
+        Metric::AvgSpeed => "round(avg(s.avg_speed_kmh)::numeric, 1)".to_owned(),
+        Metric::Calories => "sum(s.calories)".to_owned(),
     };
     let bucket = match a.bucket {
         Bucket::Day => "day",
