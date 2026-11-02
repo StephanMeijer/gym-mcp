@@ -23,10 +23,10 @@ Gym logbook. Typical flow:
    then set_add with its workout_id. Corrections → set_update / set_delete.
 4. \"What next?\" → training_overview (and exercise_alternatives if something is busy). Recommend from that data. \
    Judge what's possible by comparing each exercise's equipment text with the gym's equipment text; if the gym's text \
-   doesn't say, ask the user, then add what you learn to the gym with gym_update (send the full updated text).
+   doesn't say, ask the user, then add what you learn to the gym with gym_update equipment_append.
 5. When the user leaves → workout_finish. Stale workouts close automatically.
-Gym equipment: one free-text field per gym. When the user shows or mentions equipment, add it there with gym_update, \
-keeping what's already written: what it is, how many, weight range or max load, where it is, and what's missing.
+Gym equipment: one free-text field per gym. When the user shows or mentions equipment, add it as a new line with gym_update \
+equipment_append (use equipment only to rewrite the whole text): what it is, how many, weight range or max load, where it is, and what's missing.
 Muscle groups: muscle_groups = the target (primary) muscles, secondary_muscle_groups = the ones that assist (bench press: chest; secondary triceps, front_delts). Filters accept the coarse names back, shoulders, legs and arms; exercises store the specific ones.
 Descriptions: when creating exercises, add a short description (what it looks like, how it's set up) so it can be \
 recognized from a photo later.
@@ -141,7 +141,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Change a gym's name, aliases, equipment (free text, replaced as a whole) or notes.",
+        description = "Change a gym's name, aliases, equipment or notes (free text: replace it, or append a line).",
         annotations(
             title = "Update gym",
             read_only_hint = false,
