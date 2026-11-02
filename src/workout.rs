@@ -440,69 +440,6 @@ async fn fit_in_window(tx: &mut Tx, t: &mut Target, at: DateTime<Utc>, now: Date
     Ok(())
 }
 
-/// What the workout's gym has recorded for one piece of equipment the exercise needs.
-pub struct Rack {
-    pub name: String,
-    pub available_weights_kg: Option<Vec<f64>>,
-    pub max_load_kg: Option<f64>,
-}
-
-/// Warnings (never errors) for a weight the gym's recorded equipment can't produce:
-/// not one of the fixed weights on the rack, or above a machine's max.
-pub fn weight_warnings(weight: f64, gym: &str, rack: &[Rack]) -> Vec<String> {
-    let mut out = Vec::new();
-    for r in rack {
-        if let Some(ws) = r.available_weights_kg.as_deref().filter(|w| !w.is_empty())
-            && !ws.iter().any(|w| (w - weight).abs() < 0.01)
-        {
-            let list = ws.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(", ");
-            out.push(format!(
-                "{weight} kg isn't among {gym}'s recorded {} weights ({list} kg). Logged anyway; \
-                 if the rack has it, add it with gym_equipment_set",
-                r.name
-            ));
-        }
-        if let Some(max) = r.max_load_kg
-            && weight > max + 0.01
-        {
-            out.push(format!(
-                "{weight} kg is above {gym}'s recorded {} max of {max} kg. Logged anyway; \
-                 check the weight or update max_load_kg",
-                r.name
-            ));
-        }
-    }
-    out
-}
-
-async fn rack(tx: &mut Tx, workout_id: i64, exercise_id: i64) -> AppResult<(String, Vec<Rack>)> {
-    let gym: String = sqlx::query_scalar("SELECT g.name FROM workout w JOIN gym g ON g.id = w.gym_id WHERE w.id = $1")
-        .bind(workout_id)
-        .fetch_one(&mut **tx)
-        .await?;
-    let rows: Vec<(String, Option<Vec<f64>>, Option<f64>)> = sqlx::query_as(
-        "SELECT eq.name, ge.available_weights_kg, ge.max_load_kg
-         FROM exercise_equipment ee
-         JOIN equipment eq ON eq.id = ee.equipment_id
-         JOIN gym_equipment ge ON ge.equipment_id = ee.equipment_id AND ge.status = 'present'
-              AND ge.gym_id = (SELECT gym_id FROM workout WHERE id = $1)
-         WHERE ee.exercise_id = $2",
-    )
-    .bind(workout_id)
-    .bind(exercise_id)
-    .fetch_all(&mut **tx)
-    .await?;
-    let rack = rows
-        .into_iter()
-        .map(|(name, available_weights_kg, max_load_kg)| Rack {
-            name,
-            available_weights_kg,
-            max_load_kg,
-        })
-        .collect();
-    Ok((gym, rack))
-}
-
 pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> {
     if a.sets.is_empty() || a.sets.len() > 50 {
         return Err(user_err("pass between 1 and 50 sets"));
@@ -560,20 +497,10 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         .execute(&mut *tx)
         .await?;
     }
-    let (gym, rack) = rack(&mut tx, t.id, exercise_id).await?;
-    let mut warnings: Vec<String> = Vec::new();
-    for s in &a.sets {
-        for w in s.weight_kg.map(|w| weight_warnings(w, &gym, &rack)).unwrap_or_default() {
-            if !warnings.contains(&w) {
-                warnings.push(w);
-            }
-        }
-    }
     let w = workout_json(&mut tx, owner, t.id).await?;
     tx.commit().await?;
     Ok(json!({
         "added": a.sets.len(),
-        "warnings": warnings,
         "workout": w,
         "started_at_moved_back": t.started_at != original_start,
         "closed_stale": closed,
@@ -664,32 +591,6 @@ pub async fn set_delete(app: &App, owner: &str, a: SetDeleteArgs) -> AppResult<V
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn weight_warnings_flag_off_rack_and_over_max() {
-        let rack = |w: Option<Vec<f64>>, m: Option<f64>| Rack {
-            name: "dumbbells".into(),
-            available_weights_kg: w,
-            max_load_kg: m,
-        };
-        let db = [rack(Some(vec![10.0, 12.0, 14.0]), None)];
-        assert!(weight_warnings(12.0, "NDSM", &db).is_empty());
-        let w = weight_warnings(13.0, "NDSM", &db);
-        assert_eq!(w.len(), 1);
-        assert!(
-            w[0].starts_with("13 kg isn't among NDSM's recorded dumbbells weights (10, 12, 14 kg)"),
-            "{}",
-            w[0]
-        );
-        let machine = [rack(None, Some(300.0))];
-        assert!(weight_warnings(300.0, "NDSM", &machine).is_empty());
-        assert!(weight_warnings(320.0, "NDSM", &machine)[0].contains("above NDSM's recorded dumbbells max of 300 kg"));
-        assert!(
-            weight_warnings(13.0, "NDSM", &[rack(None, None)]).is_empty(),
-            "nothing recorded: no opinion"
-        );
-        assert!(weight_warnings(13.0, "NDSM", &[rack(Some(vec![]), None)]).is_empty());
-    }
 
     #[test]
     fn stale_rules() {

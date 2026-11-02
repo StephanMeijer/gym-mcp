@@ -35,32 +35,26 @@ fn user_msg(r: Result<Value, AppError>) -> String {
 const ME: &str = "alice";
 
 async fn seed(app: &App) {
-    setup::gym_create(app, ME, a(json!({"name": "Trainmore NDSM", "aliases": ["ndsm"]})))
-        .await
-        .unwrap();
-    setup::gym_create(app, ME, a(json!({"name": "Basic-Fit Zuid"})))
-        .await
-        .unwrap();
-    setup::gym_equipment_set(
+    setup::gym_create(
         app,
         ME,
-        a(json!({"gym": "ndsm", "items": [
-            {"name": "leg press", "category": "machine", "max_load_kg": 300},
-            {"name": "dumbbells", "category": "free_weight", "available_weights_kg": [2, 4, 6, 8, 10, 12, 14]},
-            {"name": "cable tower", "status": "absent"}
-        ]})),
+        a(json!({"name": "Trainmore NDSM", "aliases": ["ndsm"],
+                 "equipment": "leg press (max 300 kg), dumbbells 2-14 kg, flat benches. No cable tower."})),
     )
     .await
     .unwrap();
+    setup::gym_create(app, ME, a(json!({"name": "Basic-Fit Zuid"})))
+        .await
+        .unwrap();
     for (name, groups, eq) in [
-        ("Leg press", json!(["quads", "glutes"]), json!(["leg press"])),
+        ("Leg press", json!(["quads", "glutes"]), json!("leg press")),
         (
             "Dumbbell bench press",
             json!(["chest", "triceps"]),
-            json!(["dumbbells", "flat bench"]),
+            json!("dumbbells + flat bench"),
         ),
-        ("Cable fly", json!(["chest"]), json!(["cable tower"])),
-        ("Push-up", json!(["chest", "triceps"]), json!([])),
+        ("Cable fly", json!(["chest"]), json!("cable tower")),
+        ("Push-up", json!(["chest", "triceps"]), json!(null)),
     ] {
         setup::exercise_create(
             app,
@@ -245,50 +239,6 @@ async fn past_workout_and_local_calendar(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn availability_distinguishes_unknown_from_absent(pool: PgPool) {
-    let app = app(pool);
-    seed(&app).await;
-    let by_name = |v: &Value, n: &str| v.as_array().unwrap().iter().find(|e| e["name"] == n).cloned();
-
-    let r = setup::exercise_search(&app, ME, a(json!({"gym": "ndsm"})))
-        .await
-        .unwrap();
-    assert_eq!(by_name(&r, "Leg press").unwrap()["availability"], "available");
-    assert_eq!(by_name(&r, "Push-up").unwrap()["availability"], "available");
-    let bench = by_name(&r, "Dumbbell bench press").unwrap();
-    assert_eq!(bench["availability"], "unverified");
-    assert_eq!(bench["unknown_equipment"], json!(["flat bench"]));
-    assert!(by_name(&r, "Cable fly").is_none(), "absent equipment hides it");
-
-    let r = setup::exercise_search(&app, ME, a(json!({"gym": "ndsm", "include_unavailable": true})))
-        .await
-        .unwrap();
-    assert_eq!(by_name(&r, "Cable fly").unwrap()["availability"], "unavailable");
-
-    setup::gym_update(&app, ME, a(json!({"gym": "ndsm", "inventory_complete": true})))
-        .await
-        .unwrap();
-    let r = setup::exercise_search(&app, ME, a(json!({"gym": "ndsm"})))
-        .await
-        .unwrap();
-    assert!(
-        by_name(&r, "Dumbbell bench press").is_none(),
-        "complete inventory: unknown = absent"
-    );
-
-    setup::gym_update(&app, ME, a(json!({"gym": "ndsm", "inventory_complete": false})))
-        .await
-        .unwrap();
-    setup::gym_equipment_forget(&app, ME, a(json!({"gym": "ndsm", "names": ["cable tower"]})))
-        .await
-        .unwrap();
-    let r = setup::exercise_search(&app, ME, a(json!({"gym": "ndsm"})))
-        .await
-        .unwrap();
-    assert_eq!(by_name(&r, "Cable fly").unwrap()["availability"], "unverified");
-}
-
-#[sqlx::test]
 async fn search_records_and_overview(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
@@ -346,13 +296,21 @@ async fn search_records_and_overview(pool: PgPool) {
     let alt = search::exercise_alternatives(&app, ME, a(json!({"exercise": "push-up"})))
         .await
         .unwrap();
-    let names: Vec<_> = alt
+    let names: Vec<_> = alt["alternatives"]
         .as_array()
         .unwrap()
         .iter()
         .map(|e| e["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["Dumbbell bench press"], "cable fly is absent at ndsm");
+    assert_eq!(
+        names,
+        ["Dumbbell bench press", "Cable fly"],
+        "most shared muscle groups first"
+    );
+    assert!(
+        alt["gym"]["equipment"].as_str().unwrap().contains("No cable tower"),
+        "Claude gets the gym text to judge"
+    );
 }
 
 #[sqlx::test]
@@ -379,71 +337,7 @@ async fn owners_are_isolated(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn equipment_has_a_description_separate_from_gym_notes(pool: PgPool) {
-    let app = app(pool);
-    seed(&app).await;
-    setup::gym_equipment_set(
-        &app,
-        ME,
-        a(json!({"gym": "ndsm", "items": [
-            {"name": "leg press", "description": "45 degree plate-loaded sled", "notes": "two of them, upstairs"}
-        ]})),
-    )
-    .await
-    .unwrap();
-    let gym = setup::gym_get(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
-    let lp = gym["equipment_present"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["name"] == "leg press")
-        .unwrap()
-        .clone();
-    assert_eq!(lp["description"], "45 degree plate-loaded sled");
-    assert_eq!(lp["notes"], "two of them, upstairs");
-
-    // Updating the kind leaves the unset fields alone and is visible everywhere.
-    let eq = setup::equipment_update(&app, ME, a(json!({"equipment": "legpress", "aliases": ["sled"]})))
-        .await
-        .unwrap();
-    assert_eq!(eq["description"], "45 degree plate-loaded sled");
-    assert_eq!(eq["aliases"], json!(["sled"]));
-    let eq = setup::equipment_update(
-        &app,
-        ME,
-        a(json!({"equipment": "sled", "description": "45° sled, plates on the side"})),
-    )
-    .await
-    .unwrap();
-    assert_eq!(eq["description"], "45° sled, plates on the side");
-    let list = setup::equipment_list(&app, ME).await.unwrap();
-    assert!(
-        list.as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e["description"] == "45° sled, plates on the side")
-    );
-
-    let hits = search::search(&app, ME, a(json!({"query": "plates"}))).await.unwrap();
-    assert_eq!(hits["notes"][0]["type"], "equipment");
-    assert_eq!(hits["notes"][0]["name"], "leg press");
-
-    // Exercise descriptions show up in search results too.
-    setup::exercise_update(
-        &app,
-        ME,
-        a(json!({"exercise": "push-up", "description": "hands under shoulders, chest to floor"})),
-    )
-    .await
-    .unwrap();
-    let ex = setup::exercise_search(&app, ME, a(json!({"query": "push-up"})))
-        .await
-        .unwrap();
-    assert_eq!(ex[0]["description"], "hands under shoulders, chest to floor");
-}
-
-#[sqlx::test]
-async fn effort_rest_goal_and_rack_warnings_feed_recommendations(pool: PgPool) {
+async fn effort_rest_and_goal_feed_recommendations(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
     let s = setup::settings_update(&app, ME, a(json!({"goal": "hypertrophy"})))
@@ -454,7 +348,6 @@ async fn effort_rest_goal_and_rack_warnings_feed_recommendations(pool: PgPool) {
     assert!(user_msg(setup::settings_update(&app, ME, a(json!({}))).await).contains("timezone and/or goal"));
 
     workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
-    // 13 kg isn't on NDSM's dumbbell rack (2..14 in steps of 2): logged, with one warning.
     let r = workout::set_add(
         &app,
         ME,
@@ -467,30 +360,8 @@ async fn effort_rest_goal_and_rack_warnings_feed_recommendations(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(r["added"], 3);
-    let warnings = r["warnings"].as_array().unwrap();
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(
-        warnings[0]
-            .as_str()
-            .unwrap()
-            .contains("13 kg isn't among Trainmore NDSM's recorded dumbbells weights")
-    );
     let first = &r["workout"]["exercises"][0]["sets"][0];
     assert_eq!((first["rpe"].as_f64(), first["rest_s"].as_i64()), (Some(7.0), Some(90)));
-
-    let r = workout::set_add(
-        &app,
-        ME,
-        a(json!({"exercise": "leg press", "sets": [{"reps": 5, "weight_kg": 320}]})),
-    )
-    .await
-    .unwrap();
-    assert!(
-        r["warnings"][0]
-            .as_str()
-            .unwrap()
-            .contains("above Trainmore NDSM's recorded leg press max of 300 kg")
-    );
 
     for bad in [json!(11), json!(7.3), json!(0)] {
         let msg = user_msg(
@@ -531,4 +402,111 @@ async fn effort_rest_goal_and_rack_warnings_feed_recommendations(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(hard[0]["rpe"], 9.0);
+}
+
+#[sqlx::test]
+async fn equipment_is_free_text_on_gyms_and_exercises(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    let g = setup::gym_get(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    assert!(g["equipment"].as_str().unwrap().starts_with("leg press (max 300 kg)"));
+    let g = setup::gym_update(
+        &app,
+        ME,
+        a(json!({"gym": "ndsm", "equipment": "leg press, dumbbells 2-40 kg, a sled"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(g["equipment"], "leg press, dumbbells 2-40 kg, a sled");
+    let g = setup::gym_update(&app, ME, a(json!({"gym": "ndsm", "notes": "sauna"})))
+        .await
+        .unwrap();
+    assert_eq!(
+        g["equipment"], "leg press, dumbbells 2-40 kg, a sled",
+        "unset fields stay"
+    );
+
+    let ex = setup::exercise_search(&app, ME, a(json!({"query": "dumbbell bench"})))
+        .await
+        .unwrap();
+    assert_eq!(ex[0]["equipment"], "dumbbells + flat bench");
+    let ex = setup::exercise_search(&app, ME, a(json!({"query": "push-up"})))
+        .await
+        .unwrap();
+    assert!(ex[0]["equipment"].is_null(), "bodyweight");
+
+    let hits = search::search(&app, ME, a(json!({"query": "sled"}))).await.unwrap();
+    assert_eq!(hits["notes"][0]["type"], "gym_equipment");
+    let hits = search::search(&app, ME, a(json!({"query": "cable"}))).await.unwrap();
+    assert!(
+        hits["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["type"] == "exercise_equipment" && h["name"] == "Cable fly")
+    );
+
+    workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    let o = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
+    assert_eq!(
+        o["overview"]["gym"]["equipment"],
+        "leg press, dumbbells 2-40 kg, a sled"
+    );
+    assert_eq!(
+        o["overview"]["exercises"].as_array().unwrap().len(),
+        4,
+        "all exercises; Claude judges the fit"
+    );
+
+    let sets = search::set_search(&app, ME, a(json!({"equipment": "dumbbell"})))
+        .await
+        .unwrap();
+    assert_eq!(sets, json!([]));
+}
+
+/// Migration 0004 folds the old structured equipment into the new text fields.
+#[sqlx::test(migrations = false)]
+async fn migration_keeps_structured_equipment_as_text(pool: PgPool) {
+    for m in [
+        include_str!("../migrations/0001_init.sql"),
+        include_str!("../migrations/0002_equipment_description.sql"),
+        include_str!("../migrations/0003_effort_rest_goal.sql"),
+    ] {
+        sqlx::raw_sql(m).execute(&pool).await.unwrap();
+    }
+    sqlx::raw_sql(
+        "INSERT INTO gym (owner_sub, name, inventory_complete) VALUES ('a', 'NDSM', true);
+         INSERT INTO equipment (owner_sub, name, category, description) VALUES
+            ('a', 'leg press', 'machine', '45° sled'), ('a', 'dumbbells', 'free_weight', ''), ('a', 'cable tower', 'machine', '');
+         INSERT INTO gym_equipment (gym_id, equipment_id, status, quantity, available_weights_kg, max_load_kg, notes) VALUES
+            (1, 1, 'present', 2, NULL, 300, 'upstairs'), (1, 2, 'present', NULL, '{2,4,6}', NULL, ''), (1, 3, 'absent', NULL, NULL, NULL, '');
+         INSERT INTO exercise (owner_sub, name) VALUES ('a', 'DB bench');
+         INSERT INTO exercise_equipment VALUES (1, 2), (1, 1);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0004_equipment_free_text.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let gym: String = sqlx::query_scalar("SELECT equipment FROM gym")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        gym,
+        "dumbbells (free weight); 2, 4, 6 kg\nleg press (machine): 45° sled; 2×; max 300 kg; upstairs\nNot available: cable tower\nThis list is complete."
+    );
+    let ex: String = sqlx::query_scalar("SELECT equipment FROM exercise")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(ex, "dumbbells + leg press");
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_tables WHERE tablename LIKE '%equipment%'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
 }

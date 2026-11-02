@@ -16,19 +16,21 @@ const INSTRUCTIONS: &str = "\
 Gym logbook. Typical flow:
 1. User arrives (\"I'm at the NDSM Trainmore\") → workout_start(gym). Same gym again just resumes. If the gym is unknown, ask, then gym_create.
 2. User reports sets, often with a photo of the machine/weights (\"10/8/6 on 20kg\", \"12 on 13kg\") → identify the exercise, \
-   exercise_search to find it; only if it truly does not exist, exercise_create with its muscle groups and ALL equipment it needs. \
+   exercise_search to find it; only if it truly does not exist, exercise_create with its muscle groups and the equipment it needs (free text). \
    Then set_add with one entry per set. Never invent ids; names and aliases are accepted everywhere.
 3. Anything not done just now (\"forgot: 3x10 squats at 19:40\") → pass performed_at. A whole past session → workout_add_past, \
    then set_add with its workout_id. Corrections → set_update / set_delete.
 4. \"What next?\" → training_overview (and exercise_alternatives if something is busy). Recommend from that data. \
-   Exercises marked 'unverified' need equipment we don't know the gym has: ask, then record it with gym_equipment_set \
-   (status 'absent' if the gym doesn't have it).
+   Judge what's possible by comparing each exercise's equipment text with the gym's equipment text; if the gym's text \
+   doesn't say, ask the user, then add what you learn to the gym with gym_update (send the full updated text).
 5. When the user leaves → workout_finish. Stale workouts close automatically.
-Descriptions: when creating exercises or equipment, add a short description (what it looks like, how it's set up) \
-so it can be recognized from a photo later; equipment description = the kind, gym_equipment_set notes = that gym's unit.
+Gym equipment: one free-text field per gym. When the user shows or mentions equipment, add it there with gym_update, \
+keeping what's already written: what it is, how many, weight range or max load, where it is, and what's missing.
+Descriptions: when creating exercises, add a short description (what it looks like, how it's set up) so it can be \
+recognized from a photo later.
 Effort: when the user says how a set felt, record rpe (1-10; \"2 left in the tank\" = RPE 8, \"to failure\" = 10) and rest_s \
 if mentioned. Ask for their goal once (settings_update goal). Recommend progression from goal + last_session in \
-training_overview: e.g. all sets at RPE <= 7 → add weight or reps. If set_add returns warnings, tell the user.
+training_overview: e.g. all sets at RPE <= 7 → add weight or reps. If a logged weight doesn't fit the gym's equipment text, mention it.
 Weights: the number on the implement (per dumbbell/kettlebell); barbell = total incl. bar; machine = stack setting. Convert lb to kg.
 Times: answers are in the user's timezone; inputs may be RFC 3339 or local (\"2026-11-02 19:40\").
 Photos stay with you; send only text.";
@@ -114,7 +116,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Change a gym's name, aliases, notes or inventory_complete.",
+        description = "Change a gym's name, aliases, equipment (free text, replaced as a whole) or notes.",
         annotations(
             title = "Update gym",
             read_only_hint = false,
@@ -128,7 +130,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "A gym with its equipment: present (with weights/loads) and confirmed absent. Unlisted = unknown.",
+        description = "A gym with its equipment text and notes.",
         annotations(title = "Show gym", read_only_hint = true, open_world_hint = false)
     )]
     async fn gym_get(&self, p: P, a: Parameters<GymRef>) -> R {
@@ -144,57 +146,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Record what a gym has (or confirm it lacks): leg press, dumbbells 2-40kg, mats… Creates equipment kinds as needed; updates existing entries.",
-        annotations(
-            title = "Record gym equipment",
-            read_only_hint = false,
-            destructive_hint = true,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    async fn gym_equipment_set(&self, p: P, a: Parameters<GymEquipmentSetArgs>) -> R {
-        call!(self, p, gym_equipment_set, a)
-    }
-
-    #[tool(
-        description = "Set equipment at a gym back to unknown.",
-        annotations(
-            title = "Forget gym equipment",
-            read_only_hint = false,
-            destructive_hint = true,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    async fn gym_equipment_forget(&self, p: P, a: Parameters<GymEquipmentForgetArgs>) -> R {
-        call!(self, p, gym_equipment_forget, a)
-    }
-
-    #[tool(
-        description = "Change an equipment kind's name, aliases, category or description (applies at every gym).",
-        annotations(
-            title = "Update equipment",
-            read_only_hint = false,
-            destructive_hint = true,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    async fn equipment_update(&self, p: P, a: Parameters<EquipmentUpdateArgs>) -> R {
-        call!(self, p, equipment_update, a)
-    }
-
-    #[tool(
-        description = "All equipment kinds defined so far.",
-        annotations(title = "List equipment", read_only_hint = true, open_world_hint = false)
-    )]
-    async fn equipment_list(&self, p: P) -> R {
-        call!(self, p, equipment_list)
-    }
-
-    #[tool(
-        description = "Create an exercise with its muscle groups and ALL the equipment it requires. Search first to avoid duplicates.",
+        description = "Create an exercise with its muscle groups and the equipment it needs (free text). Search first to avoid duplicates.",
         annotations(
             title = "Create exercise",
             read_only_hint = false,
@@ -222,7 +174,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Find exercises by name (typos ok) and/or muscle group; with a gym, shows whether each is available there.",
+        description = "Find exercises by name (typos ok) and/or muscle group.",
         annotations(title = "Find exercises", read_only_hint = true, open_world_hint = false)
     )]
     async fn exercise_search(&self, p: P, a: Parameters<ExerciseSearchArgs>) -> R {
@@ -346,7 +298,7 @@ impl GymServer {
 
     // ----- search & analysis -----
     #[tool(
-        description = "Everything needed to recommend what to do next at a gym: doable exercises with last done/top set, days since each muscle group, and today's work.",
+        description = "Everything needed to recommend what to do next at a gym: its equipment text, every exercise with its equipment text and last session, days since each muscle group, today's work and the goal.",
         annotations(title = "Training overview", read_only_hint = true, open_world_hint = false)
     )]
     async fn training_overview(&self, p: P, a: Parameters<OverviewArgs>) -> R {
@@ -354,7 +306,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Free-text search across gym/exercise/equipment names and all notes.",
+        description = "Free-text search across gym and exercise names, equipment texts, descriptions and notes.",
         annotations(title = "Search", read_only_hint = true, open_world_hint = false)
     )]
     async fn search(&self, p: P, a: Parameters<SearchArgs>) -> R {
@@ -386,7 +338,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Exercises that train the same muscles and can be done at the gym (default: the current one).",
+        description = "Exercises that train the same muscles, with the gym's equipment text (default: the current gym) to judge what's possible.",
         annotations(title = "Alternative exercises", read_only_hint = true, open_world_hint = false)
     )]
     async fn exercise_alternatives(&self, p: P, a: Parameters<AlternativesArgs>) -> R {
@@ -410,7 +362,7 @@ mod tests {
     #[test]
     fn every_tool_is_annotated_and_closed_world() {
         let tools = GymServer::tool_router().list_all();
-        assert_eq!(tools.len(), 28);
+        assert_eq!(tools.len(), 24);
         for t in &tools {
             let a = t
                 .annotations
