@@ -405,6 +405,36 @@ async fn effort_rest_and_goal_feed_recommendations(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn gym_append_adds_a_line(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    let up = |v: Value| setup::gym_update(&app, ME, a(v));
+    let g = up(json!({"gym": "Basic-Fit Zuid", "equipment_append": " cable tower ", "notes_append": "busy at 18:00"}))
+        .await
+        .unwrap();
+    assert_eq!(g["equipment"], "cable tower", "empty text: just the line, trimmed");
+    assert_eq!(g["notes"], "busy at 18:00");
+    let g = up(json!({"gym": "Basic-Fit Zuid", "equipment_append": "sled", "notes_append": "sauna"}))
+        .await
+        .unwrap();
+    assert_eq!(g["equipment"], "cable tower\nsled");
+    assert_eq!(g["notes"], "busy at 18:00\nsauna");
+
+    let err = up(json!({"gym": "Basic-Fit Zuid", "equipment": "x", "equipment_append": "y"})).await;
+    assert!(err.unwrap_err().to_string().contains("not both"));
+    let err = up(json!({"gym": "Basic-Fit Zuid", "notes": "x", "notes_append": "y"})).await;
+    assert!(err.is_err());
+    let err = up(json!({"gym": "Basic-Fit Zuid", "equipment_append": "  "})).await;
+    assert!(err.unwrap_err().to_string().contains("empty"));
+    let err = up(json!({"gym": "Basic-Fit Zuid", "notes_append": ""})).await;
+    assert!(err.unwrap_err().to_string().contains("empty"));
+    let g = setup::gym_get(&app, ME, a(json!({"gym": "Basic-Fit Zuid"})))
+        .await
+        .unwrap();
+    assert_eq!(g["equipment"], "cable tower\nsled", "unchanged after the error");
+}
+
+#[sqlx::test]
 async fn equipment_is_free_text_on_gyms_and_exercises(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;

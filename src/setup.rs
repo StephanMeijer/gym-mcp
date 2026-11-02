@@ -229,17 +229,40 @@ pub struct GymUpdateArgs {
     pub name: Option<String>,
     /// Replaces the alias list.
     pub aliases: Option<Vec<String>>,
-    /// Replaces the equipment text. To add something, send the existing text with the addition.
+    /// Replaces the whole equipment text. To add something, use equipment_append.
     pub equipment: Option<String>,
+    /// Adds this as a new line under the existing equipment text.
+    pub equipment_append: Option<String>,
+    /// Replaces the whole notes text. To add something, use notes_append.
     pub notes: Option<String>,
+    /// Adds this as a new line under the existing notes.
+    pub notes_append: Option<String>,
 }
 
 pub async fn gym_update(app: &App, owner: &str, a: GymUpdateArgs) -> AppResult<Value> {
+    if a.equipment.is_some() && a.equipment_append.is_some() {
+        return Err(user_err("pass equipment or equipment_append, not both"));
+    }
+    if a.notes.is_some() && a.notes_append.is_some() {
+        return Err(user_err("pass notes or notes_append, not both"));
+    }
+    if [&a.equipment_append, &a.notes_append]
+        .into_iter()
+        .flatten()
+        .any(|s| s.trim().is_empty())
+    {
+        return Err(user_err("equipment_append and notes_append can't be empty"));
+    }
     let mut tx = db::begin(app, owner).await?;
     let id = resolve::id(&mut tx, owner, Kind::Gym, &a.gym).await?;
     sqlx::query(
         "UPDATE gym SET name = coalesce(btrim($2), name), aliases = coalesce($3, aliases),
-                        equipment = coalesce($4, equipment), notes = coalesce($5, notes)
+                        equipment = CASE WHEN $6::text IS NULL THEN coalesce($4, equipment)
+                                         WHEN equipment = '' THEN btrim($6)
+                                         ELSE equipment || E'\\n' || btrim($6) END,
+                        notes = CASE WHEN $7::text IS NULL THEN coalesce($5, notes)
+                                     WHEN notes = '' THEN btrim($7)
+                                     ELSE notes || E'\\n' || btrim($7) END
          WHERE id = $1",
     )
     .bind(id)
@@ -247,6 +270,8 @@ pub async fn gym_update(app: &App, owner: &str, a: GymUpdateArgs) -> AppResult<V
     .bind(&a.aliases)
     .bind(&a.equipment)
     .bind(&a.notes)
+    .bind(&a.equipment_append)
+    .bind(&a.notes_append)
     .execute(&mut *tx)
     .await?;
     let v = gym_json(&mut tx, owner, id).await?;
