@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/StephanMeijer/gym-mcp/compare/v0.1.4...v0.2.0) - 2026-11-02
+
+### Added
+
+- *(sets)* record rpe, rest and a training goal, and warn on off-rack weights
+
+### Other
+
+- [**breaking**] replace the equipment entity with free-text equipment on gyms and exercises
+
 ## [0.1.4](https://github.com/StephanMeijer/gym-mcp/compare/v0.1.3...v0.1.4) - 2026-11-02
 
 ### Added
