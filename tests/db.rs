@@ -1418,4 +1418,14 @@ async fn unilateral_counts_per_side(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(sets_metric["series"][0]["value"], 4);
+    // The best e1RM reports the per-side weight it was computed from.
+    add(
+        app.clone(),
+        json!({"unilateral": true, "load_basis": "total", "sets": [{"reps": 10, "weight_kg": 120}]}),
+    )
+    .await;
+    let pr = search::personal_records(&app, ME, a(json!({"exercise": "cable fly"})))
+        .await
+        .unwrap();
+    assert_eq!(pr[0]["best_e1rm"]["weight_kg"], 60.0);
 }

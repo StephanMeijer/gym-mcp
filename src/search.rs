@@ -569,7 +569,7 @@ pub async fn personal_records(app: &App, owner: &str, a: RecordsArgs) -> AppResu
             FROM mine s WHERE weight_kg IS NOT NULL ORDER BY exercise_id, machine_key, {LOAD} DESC, reps DESC NULLS LAST, performed_at),
          best_e1rm AS (
             SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
-                   json_build_object('e1rm_kg', round({E1RM}::numeric, 1), 'weight_kg', weight_kg, 'reps', reps,
+                   json_build_object('e1rm_kg', round({E1RM}::numeric, 1), 'weight_kg', {LOAD}, 'reps', reps,
                                      'performed_at', performed_at, 'set_id', id) AS r
             FROM mine s WHERE weight_kg IS NOT NULL AND reps > 0 ORDER BY exercise_id, machine_key, {E1RM} DESC, performed_at),
          reps_at AS (
