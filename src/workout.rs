@@ -127,7 +127,7 @@ pub async fn workout_json(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResul
                                'sets', json_agg(json_build_object(
                                    'set_id', s.id, 'set_number', s.n, 'performed_at', s.performed_at,
                                    'reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
-                                   'rpe', s.rpe, 'rest_s', s.rest_s,
+                                   'rpe', s.rpe, 'rest_s', s.rest_s, 'set_type', s.set_type,
                                    'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
                                    'machine', s.machine, 'notes', NULLIF(s.notes, '')) ORDER BY s.performed_at, s.id)) AS obj
                     FROM (SELECT ws.*, row_number() OVER (PARTITION BY ws.exercise_id ORDER BY ws.performed_at, ws.id) AS n
@@ -375,6 +375,31 @@ pub async fn current(app: &App, owner: &str) -> AppResult<Value> {
 
 // ---------- sets ----------
 
+/// Only working sets count towards volume, progress, PRs and last_session.
+#[derive(Deserialize, JsonSchema, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SetType {
+    /// Warm-up, e.g. an empty bar before the working sets.
+    Warmup,
+    #[default]
+    Working,
+    /// Deliberately partial range of motion.
+    Partial,
+    /// Stopped early (cramp, pain, equipment, phone call).
+    Interrupted,
+}
+
+impl SetType {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            SetType::Warmup => "warmup",
+            SetType::Working => "working",
+            SetType::Partial => "partial",
+            SetType::Interrupted => "interrupted",
+        }
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct SetInput {
     pub reps: Option<i32>,
@@ -389,6 +414,8 @@ pub struct SetInput {
     pub rpe: Option<f64>,
     /// Rest before this set, in seconds.
     pub rest_s: Option<i32>,
+    /// Default working. Warm-ups and sets cut short don't count towards volume, progress or PRs.
+    pub set_type: Option<SetType>,
     /// When the set was performed, if not just now. RFC 3339, or local time like "19:40" on a date: "2026-11-02 19:40".
     pub performed_at: Option<String>,
     pub notes: Option<String>,
@@ -528,8 +555,8 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         fit_in_window(&mut tx, &mut t, at, now).await?;
         sqlx::query(
             "INSERT INTO workout_set (workout_id, exercise_id, performed_at, reps, weight_kg, duration_s, rpe, rest_s, notes,
-                                      distance_m, intensity, machine)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, coalesce($9, ''), $10, coalesce($11, ''), $12)",
+                                      distance_m, intensity, machine, set_type)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, coalesce($9, ''), $10, coalesce($11, ''), $12, $13)",
         )
         .bind(t.id)
         .bind(exercise_id)
@@ -543,6 +570,7 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         .bind(s.distance_m)
         .bind(&s.intensity)
         .bind(&machine)
+        .bind(s.set_type.unwrap_or_default().as_str())
         .execute(&mut *tx)
         .await?;
     }
@@ -573,6 +601,7 @@ pub struct SetUpdateArgs {
     /// 1-10 in half steps.
     pub rpe: Option<f64>,
     pub rest_s: Option<i32>,
+    pub set_type: Option<SetType>,
     pub performed_at: Option<String>,
     pub notes: Option<String>,
 }
@@ -609,7 +638,8 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
             duration_s = coalesce($5, duration_s), performed_at = coalesce($6, performed_at),
             notes = coalesce($7, notes), rpe = coalesce($8, rpe), rest_s = coalesce($9, rest_s),
             distance_m = coalesce($10, distance_m), intensity = coalesce($11, intensity),
-            machine = CASE WHEN $12::text IS NULL THEN machine ELSE NULLIF(btrim($12), '') END, updated_at = now()
+            machine = CASE WHEN $12::text IS NULL THEN machine ELSE NULLIF(btrim($12), '') END,
+            set_type = coalesce($13, set_type), updated_at = now()
          WHERE id = $1",
     )
     .bind(a.set_id)
@@ -624,6 +654,7 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
     .bind(a.distance_m)
     .bind(&a.intensity)
     .bind(&a.machine)
+    .bind(a.set_type.map(SetType::as_str))
     .execute(&mut *tx)
     .await?;
     let w = workout_json(&mut tx, owner, workout_id).await?;

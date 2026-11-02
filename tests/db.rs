@@ -1201,3 +1201,76 @@ async fn vitals_store_their_unit_and_show_in_overview(pool: PgPool) {
     assert!(m.get("body_weight").is_none(), "body weight has its own field");
     assert!(ov["overview"]["body_weight"].is_null());
 }
+
+#[sqlx::test]
+async fn only_working_sets_count(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(1)})))
+        .await
+        .unwrap();
+    let added = workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "leg press", "sets": [
+            {"reps": 10, "weight_kg": 60, "set_type": "warmup"},
+            {"reps": 10, "weight_kg": 100}, {"reps": 10, "weight_kg": 100, "set_type": "working"},
+            {"reps": 3, "weight_kg": 160, "set_type": "interrupted"}
+        ]})),
+    )
+    .await
+    .unwrap();
+    let sets = added["workout"]["exercises"][0]["sets"].as_array().unwrap();
+    let types: Vec<_> = sets.iter().map(|s| s["set_type"].clone()).collect();
+    assert_eq!(
+        types,
+        [
+            json!("warmup"),
+            json!("working"),
+            json!("working"),
+            json!("interrupted")
+        ]
+    );
+    let cut_short = sets[3]["set_id"].clone();
+
+    let quads = |app: App| async move {
+        search::muscle_group_volume(&app, ME, a(json!({"days": 7})))
+            .await
+            .unwrap()["muscle_groups"]["quads"]["sets"]
+            .clone()
+    };
+    let heaviest = |app: App| async move {
+        search::personal_records(&app, ME, a(json!({"exercise": "leg press"})))
+            .await
+            .unwrap()[0]["heaviest_set"]["weight_kg"]
+            .clone()
+    };
+    assert_eq!(quads(app.clone()).await, 2.0);
+    assert_eq!(heaviest(app.clone()).await, 100.0);
+    let top = search::progress(&app, ME, a(json!({"exercise": "leg press", "metric": "top_weight"})))
+        .await
+        .unwrap();
+    assert_eq!(top["series"][0]["value"], 100.0);
+    let ov = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
+    let lp = ov["overview"]["exercises"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "Leg press")
+        .unwrap();
+    assert_eq!(lp["last_session"]["sets"].as_array().unwrap().len(), 2);
+    assert_eq!(ov["overview"]["done_today"][0]["sets"], 2);
+    assert_eq!(ov["overview"]["muscle_groups"]["quads"]["sets_7d"], 2.0);
+
+    let warmups = search::set_search(&app, ME, a(json!({"set_type": "warmup"})))
+        .await
+        .unwrap();
+    assert_eq!(warmups.as_array().unwrap().len(), 1);
+    assert_eq!(warmups[0]["weight_kg"], 60.0);
+
+    workout::set_update(&app, ME, a(json!({"set_id": cut_short, "set_type": "working"})))
+        .await
+        .unwrap();
+    assert_eq!(quads(app.clone()).await, 3.0);
+    assert_eq!(heaviest(app.clone()).await, 160.0);
+}

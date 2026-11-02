@@ -42,6 +42,8 @@ training_overview returns them: take goals_notes into account (taper as a named 
 priority_muscle_groups (aim for the upper end of their weekly sets), and never suggest exercises that conflict with \
 limitations; pick from exercise_alternatives instead. Recommend progression from goal + last_session in \
 training_overview: e.g. all sets at RPE <= 7 → add weight or reps. If a logged weight doesn't fit the gym's equipment text, mention it.
+Set type: record warm-ups (set_type warmup), deliberately partial reps (partial) and sets cut short (interrupted); \
+only working sets count towards volume, progress, personal records and last_session.
 Weights: the number on the implement (per dumbbell/kettlebell); barbell = total incl. bar; machine = stack setting. Convert lb to kg.
 Machines: stack weights only compare within one brand. Pass set_add machine (brand/model, read off the photo when \
 visible; reuse a name from machines_used in training_overview). Omitted, it reuses the last machine for that exercise \
