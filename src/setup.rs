@@ -11,8 +11,12 @@ use crate::resolve::{self, Kind};
 
 pub const MUSCLE_GROUPS: &[&str] = &[
     "chest",
-    "back",
-    "shoulders",
+    "lats",
+    "upper_back",
+    "lower_back",
+    "front_delts",
+    "side_delts",
+    "rear_delts",
     "biceps",
     "triceps",
     "forearms",
@@ -20,18 +24,62 @@ pub const MUSCLE_GROUPS: &[&str] = &[
     "glutes",
     "quads",
     "hamstrings",
+    "adductors",
+    "abductors",
     "calves",
-    "cardio",
+    "neck",
 ];
 
-fn check_muscle_groups(groups: &[String]) -> AppResult<()> {
-    match groups.iter().find(|g| !MUSCLE_GROUPS.contains(&g.as_str())) {
-        Some(bad) => Err(user_err(format!(
-            "unknown muscle group '{bad}'; use one of {}",
-            MUSCLE_GROUPS.join(", ")
-        ))),
-        None => Ok(()),
+/// Coarse names that work as filters but aren't stored on exercises.
+const MUSCLE_GROUP_ALIASES: &[(&str, &[&str])] = &[
+    ("back", &["lats", "upper_back", "lower_back"]),
+    ("shoulders", &["front_delts", "side_delts", "rear_delts"]),
+    (
+        "legs",
+        &["quads", "hamstrings", "glutes", "adductors", "abductors", "calves"],
+    ),
+    ("arms", &["biceps", "triceps", "forearms"]),
+];
+
+fn unknown_group(g: &str) -> crate::db::AppError {
+    let aliases: Vec<&str> = MUSCLE_GROUP_ALIASES.iter().map(|(a, _)| *a).collect();
+    user_err(format!(
+        "unknown muscle group '{g}'; use one of {} (filters also accept {})",
+        MUSCLE_GROUPS.join(", "),
+        aliases.join(", ")
+    ))
+}
+
+/// A filter value: one muscle group, or a coarse alias expanded to its groups.
+pub fn expand_muscle_group(g: &str) -> AppResult<Vec<String>> {
+    if MUSCLE_GROUPS.contains(&g) {
+        return Ok(vec![g.to_owned()]);
     }
+    match MUSCLE_GROUP_ALIASES.iter().find(|(a, _)| *a == g) {
+        Some((_, groups)) => Ok(groups.iter().map(|s| s.to_string()).collect()),
+        None => Err(unknown_group(g)),
+    }
+}
+
+pub fn expand_opt(g: &Option<String>) -> AppResult<Option<Vec<String>>> {
+    g.as_deref().map(expand_muscle_group).transpose()
+}
+
+fn check_muscle_groups(primary: &[String], secondary: &[String]) -> AppResult<()> {
+    if let Some(bad) = primary
+        .iter()
+        .chain(secondary)
+        .find(|g| !MUSCLE_GROUPS.contains(&g.as_str()))
+    {
+        return Err(match MUSCLE_GROUP_ALIASES.iter().find(|(a, _)| *a == bad) {
+            Some((a, groups)) => user_err(format!("'{a}' is too coarse to store; pick from {}", groups.join(", "))),
+            None => unknown_group(bad),
+        });
+    }
+    if let Some(both) = primary.iter().find(|g| secondary.contains(g)) {
+        return Err(user_err(format!("'{both}' can't be both primary and secondary")));
+    }
+    Ok(())
 }
 
 // ---------- settings ----------
@@ -235,9 +283,13 @@ pub struct ExerciseCreateArgs {
     #[serde(default)]
     pub aliases: Vec<String>,
     pub description: Option<String>,
-    /// From: chest, back, shoulders, biceps, triceps, forearms, core, glutes, quads, hamstrings, calves, cardio.
+    /// Primary (target) muscles. From: chest, lats, upper_back, lower_back, front_delts, side_delts, rear_delts,
+    /// biceps, triceps, forearms, core, glutes, quads, hamstrings, adductors, abductors, calves, neck.
     #[serde(default)]
     pub muscle_groups: Vec<String>,
+    /// Muscles that assist (bench press: triceps, front_delts). Same list, no overlap with muscle_groups.
+    #[serde(default)]
+    pub secondary_muscle_groups: Vec<String>,
     /// Free text: what it needs ("dumbbells + flat bench"). Empty = bodyweight.
     pub equipment: Option<String>,
     /// Default strength.
@@ -245,7 +297,8 @@ pub struct ExerciseCreateArgs {
 }
 
 pub const EXERCISE_JSON: &str = "json_build_object('id', e.id, 'name', e.name, 'aliases', e.aliases, 'kind', e.kind,
-    'description', NULLIF(e.description, ''), 'muscle_groups', e.muscle_groups, 'equipment', NULLIF(e.equipment, ''))";
+    'description', NULLIF(e.description, ''), 'muscle_groups', e.muscle_groups,
+    'secondary_muscle_groups', e.secondary_muscle_groups, 'equipment', NULLIF(e.equipment, ''))";
 
 async fn exercise_json(tx: &mut Tx, owner: &str, id: i64) -> AppResult<Value> {
     Ok(sqlx::query_scalar(AssertSqlSafe(format!(
@@ -258,11 +311,12 @@ async fn exercise_json(tx: &mut Tx, owner: &str, id: i64) -> AppResult<Value> {
 }
 
 pub async fn exercise_create(app: &App, owner: &str, a: ExerciseCreateArgs) -> AppResult<Value> {
-    check_muscle_groups(&a.muscle_groups)?;
+    check_muscle_groups(&a.muscle_groups, &a.secondary_muscle_groups)?;
     let mut tx = db::begin(app, owner).await?;
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO exercise (owner_sub, name, aliases, description, muscle_groups, equipment, kind)
-         VALUES ($1, btrim($2), $3, coalesce($4, ''), $5, coalesce($6, ''), coalesce($7, 'strength')) RETURNING id",
+        "INSERT INTO exercise (owner_sub, name, aliases, description, muscle_groups, equipment, kind,
+                               secondary_muscle_groups)
+         VALUES ($1, btrim($2), $3, coalesce($4, ''), $5, coalesce($6, ''), coalesce($7, 'strength'), $8) RETURNING id",
     )
     .bind(owner)
     .bind(&a.name)
@@ -271,6 +325,7 @@ pub async fn exercise_create(app: &App, owner: &str, a: ExerciseCreateArgs) -> A
     .bind(&a.muscle_groups)
     .bind(&a.equipment)
     .bind(a.kind.map(ExerciseKind::as_str))
+    .bind(&a.secondary_muscle_groups)
     .fetch_one(&mut *tx)
     .await?;
     let v = exercise_json(&mut tx, owner, id).await?;
@@ -286,23 +341,28 @@ pub struct ExerciseUpdateArgs {
     /// Replaces the list.
     pub aliases: Option<Vec<String>>,
     pub description: Option<String>,
-    /// Replaces the list.
+    /// Primary muscles; replaces the list.
     pub muscle_groups: Option<Vec<String>>,
+    /// Replaces the list.
+    pub secondary_muscle_groups: Option<Vec<String>>,
     /// Replaces the equipment text.
     pub equipment: Option<String>,
     pub kind: Option<ExerciseKind>,
 }
 
 pub async fn exercise_update(app: &App, owner: &str, a: ExerciseUpdateArgs) -> AppResult<Value> {
-    if let Some(g) = &a.muscle_groups {
-        check_muscle_groups(g)?;
-    }
+    // Overlap with the stored other list is caught by the table's CHECK.
+    check_muscle_groups(
+        a.muscle_groups.as_deref().unwrap_or_default(),
+        a.secondary_muscle_groups.as_deref().unwrap_or_default(),
+    )?;
     let mut tx = db::begin(app, owner).await?;
     let id = resolve::id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     sqlx::query(
         "UPDATE exercise SET name = coalesce(btrim($2), name), aliases = coalesce($3, aliases),
                              description = coalesce($4, description), muscle_groups = coalesce($5, muscle_groups),
-                             equipment = coalesce($6, equipment), kind = coalesce($7, kind)
+                             equipment = coalesce($6, equipment), kind = coalesce($7, kind),
+                             secondary_muscle_groups = coalesce($8, secondary_muscle_groups)
          WHERE id = $1",
     )
     .bind(id)
@@ -312,6 +372,7 @@ pub async fn exercise_update(app: &App, owner: &str, a: ExerciseUpdateArgs) -> A
     .bind(&a.muscle_groups)
     .bind(&a.equipment)
     .bind(a.kind.map(ExerciseKind::as_str))
+    .bind(&a.secondary_muscle_groups)
     .execute(&mut *tx)
     .await?;
     let v = exercise_json(&mut tx, owner, id).await?;
@@ -323,10 +384,12 @@ pub async fn exercise_update(app: &App, owner: &str, a: ExerciseUpdateArgs) -> A
 pub struct ExerciseSearchArgs {
     /// Words to match in the name or aliases (typos are tolerated). Omit to list all.
     pub query: Option<String>,
+    /// Matches primary muscles. Coarse names work too: back, shoulders, legs, arms.
     pub muscle_group: Option<String>,
 }
 
 pub async fn exercise_search(app: &App, owner: &str, a: ExerciseSearchArgs) -> AppResult<Value> {
+    let groups = expand_opt(&a.muscle_group)?;
     let mut tx = db::begin_read(app, owner).await?;
     // Narrow by name with the resolver's scoring so "benchpres" still finds things.
     let ids: Option<Vec<i64>> = match &a.query {
@@ -341,11 +404,11 @@ pub async fn exercise_search(app: &App, owner: &str, a: ExerciseSearchArgs) -> A
          FROM exercise e
          WHERE e.owner_sub = $1
            AND ($2::bigint[] IS NULL OR e.id = ANY($2))
-           AND ($3::text IS NULL OR $3 = ANY(e.muscle_groups))"
+           AND ($3::text[] IS NULL OR e.muscle_groups && $3)"
     )))
     .bind(owner)
     .bind(&ids)
-    .bind(&a.muscle_group)
+    .bind(&groups)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;

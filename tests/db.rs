@@ -600,3 +600,120 @@ async fn migration_turns_cardio_group_into_kind(pool: PgPool) {
         [("Bike".into(), "cardio".into()), ("Squat".into(), "strength".into())]
     );
 }
+
+#[sqlx::test]
+async fn muscle_groups_primary_secondary_and_aliases(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    setup::exercise_create(
+        &app,
+        ME,
+        a(json!({"name": "Barbell bench press", "muscle_groups": ["chest"],
+                 "secondary_muscle_groups": ["triceps", "front_delts"]})),
+    )
+    .await
+    .unwrap();
+    setup::exercise_create(
+        &app,
+        ME,
+        a(json!({"name": "Lat pulldown", "muscle_groups": ["lats"], "secondary_muscle_groups": ["biceps"]})),
+    )
+    .await
+    .unwrap();
+    workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    for ex in ["barbell bench", "lat pulldown"] {
+        workout::set_add(
+            &app,
+            ME,
+            a(json!({"exercise": ex, "sets": [{"reps": 8, "weight_kg": 50}]})),
+        )
+        .await
+        .unwrap();
+    }
+
+    let ov = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
+    let days = &ov["overview"]["days_since_muscle_group"];
+    assert_eq!(days["chest"], 0);
+    assert!(days["triceps"].is_null(), "secondary doesn't count: {days}");
+    assert!(days.get("back").is_none() && days.get("cardio").is_none());
+
+    let back = search::set_search(&app, ME, a(json!({"muscle_group": "back"})))
+        .await
+        .unwrap();
+    assert_eq!(back.as_array().unwrap().len(), 1);
+    assert_eq!(back[0]["exercise"], "Lat pulldown");
+    let found = setup::exercise_search(&app, ME, a(json!({"muscle_group": "shoulders"})))
+        .await
+        .unwrap();
+    assert_eq!(
+        found.as_array().unwrap().len(),
+        0,
+        "front_delts is only secondary on bench"
+    );
+
+    let alt = search::exercise_alternatives(&app, ME, a(json!({"exercise": "barbell bench"})))
+        .await
+        .unwrap();
+    assert_eq!(alt["alternatives"][0]["name"], "Dumbbell bench press");
+
+    let coarse = user_msg(setup::exercise_create(&app, ME, a(json!({"name": "Row", "muscle_groups": ["back"]}))).await);
+    assert!(coarse.contains("too coarse") && coarse.contains("lats"), "{coarse}");
+    let overlap = user_msg(
+        setup::exercise_create(
+            &app,
+            ME,
+            a(json!({"name": "Dip", "muscle_groups": ["triceps"], "secondary_muscle_groups": ["triceps"]})),
+        )
+        .await,
+    );
+    assert!(overlap.contains("both primary and secondary"), "{overlap}");
+    let stored_overlap = setup::exercise_update(
+        &app,
+        ME,
+        a(json!({"exercise": "lat pulldown", "secondary_muscle_groups": ["lats"]})),
+    )
+    .await;
+    assert!(matches!(stored_overlap, Err(AppError::User(_))), "{stored_overlap:?}");
+    let bad_filter = user_msg(search::set_search(&app, ME, a(json!({"muscle_group": "pecs"}))).await);
+    assert!(bad_filter.contains("unknown muscle group"), "{bad_filter}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn migration_maps_coarse_muscle_groups(pool: PgPool) {
+    for m in [
+        include_str!("../migrations/0001_init.sql"),
+        include_str!("../migrations/0002_equipment_description.sql"),
+        include_str!("../migrations/0003_effort_rest_goal.sql"),
+        include_str!("../migrations/0004_equipment_free_text.sql"),
+        include_str!("../migrations/0005_cardio.sql"),
+    ] {
+        sqlx::raw_sql(m).execute(&pool).await.unwrap();
+    }
+    sqlx::raw_sql(
+        "INSERT INTO exercise (owner_sub, name, muscle_groups) VALUES
+            ('a', 'Row', '{back,biceps}'), ('a', 'Press', '{shoulders,triceps}'), ('a', 'Bike', '{cardio,quads}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0006_muscle_groups.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let rows: Vec<(String, Vec<String>)> = sqlx::query_as("SELECT name, muscle_groups FROM exercise ORDER BY name")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    let rows: Vec<(&str, Vec<&str>)> = rows
+        .iter()
+        .map(|(n, g)| (n.as_str(), g.iter().map(String::as_str).collect()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("Bike", vec!["quads"]),
+            ("Press", vec!["front_delts", "side_delts", "triceps"]),
+            ("Row", vec!["lats", "upper_back", "biceps"]),
+        ]
+    );
+}

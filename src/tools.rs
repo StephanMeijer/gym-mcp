@@ -26,6 +26,7 @@ Gym logbook. Typical flow:
 5. When the user leaves → workout_finish. Stale workouts close automatically.
 Gym equipment: one free-text field per gym. When the user shows or mentions equipment, add it there with gym_update, \
 keeping what's already written: what it is, how many, weight range or max load, where it is, and what's missing.
+Muscle groups: muscle_groups = the target (primary) muscles, secondary_muscle_groups = the ones that assist (bench press: chest; secondary triceps, front_delts). days_since_muscle_group counts primary only. Filters accept the coarse names back, shoulders, legs and arms; exercises store the specific ones.
 Descriptions: when creating exercises, add a short description (what it looks like, how it's set up) so it can be \
 recognized from a photo later.
 Effort: when the user says how a set felt, record rpe (1-10; \"2 left in the tank\" = RPE 8, \"to failure\" = 10) and rest_s \
@@ -340,7 +341,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Exercises that train the same muscles, with the gym's equipment text (default: the current gym) to judge what's possible.",
+        description = "Exercises that train the same muscles (shared primary first, then secondary), with the gym's equipment text (default: the current gym) to judge what's possible.",
         annotations(title = "Alternative exercises", read_only_hint = true, open_world_hint = false)
     )]
     async fn exercise_alternatives(&self, p: P, a: Parameters<AlternativesArgs>) -> R {

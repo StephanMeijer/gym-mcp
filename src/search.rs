@@ -10,7 +10,7 @@ use sqlx::{Postgres, QueryBuilder};
 
 use crate::db::{self, App, AppResult, Tx, user_err};
 use crate::resolve::{self, Kind};
-use crate::setup::MUSCLE_GROUPS;
+use crate::setup::{MUSCLE_GROUPS, expand_opt};
 use crate::workout;
 
 const E1RM: &str = "(s.weight_kg * (1 + s.reps / 30.0))"; // Epley
@@ -78,6 +78,7 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
             'exercises', coalesce((
                 SELECT json_agg(json_build_object(
                     'id', e.id, 'name', e.name, 'kind', e.kind, 'muscle_groups', e.muscle_groups,
+                    'secondary_muscle_groups', e.secondary_muscle_groups,
                     'equipment', NULLIF(e.equipment, ''), 'last_done', st.last_done, 'days_since', current_date - st.last_done::date,
                     'last_session', ls.last, 'sets_last_30d', coalesce(st.sets_30d, 0))
                     ORDER BY st.last_done NULLS FIRST, e.name)
@@ -95,7 +96,8 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                 FROM mine s JOIN exercise e ON e.id = s.exercise_id
                 WHERE e.kind = 'cardio' AND s.performed_at >= date_trunc('week', now())),
             'done_today', coalesce((
-                SELECT json_agg(json_build_object('exercise', e.name, 'sets', t.n, 'muscle_groups', e.muscle_groups))
+                SELECT json_agg(json_build_object('exercise', e.name, 'sets', t.n, 'muscle_groups', e.muscle_groups,
+                                         'secondary_muscle_groups', e.secondary_muscle_groups))
                 FROM (SELECT exercise_id, count(*) n FROM mine WHERE performed_at::date = current_date GROUP BY exercise_id) t
                 JOIN exercise e ON e.id = t.exercise_id), '[]'::json))"
     )
@@ -190,6 +192,7 @@ pub enum SetOrder {
 #[derive(Deserialize, JsonSchema, Default)]
 pub struct SetSearchArgs {
     pub exercise: Option<String>,
+    /// Matches primary muscles. Coarse names work too: back, shoulders, legs, arms.
     pub muscle_group: Option<String>,
     /// Only exercises whose equipment text contains this, e.g. "dumbbell".
     pub equipment: Option<String>,
@@ -210,6 +213,7 @@ pub struct SetSearchArgs {
 }
 
 pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<Value> {
+    let groups = expand_opt(&a.muscle_group)?;
     let mut tx = db::begin_read(app, owner).await?;
     let exercise = opt_id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let gym = opt_id(&mut tx, owner, Kind::Gym, &a.gym).await?;
@@ -227,8 +231,8 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
     if let Some(id) = exercise {
         q.push(" AND s.exercise_id = ").push_bind(id);
     }
-    if let Some(mg) = &a.muscle_group {
-        q.push(" AND ").push_bind(mg.clone()).push(" = ANY(e.muscle_groups)");
+    if let Some(g) = groups {
+        q.push(" AND e.muscle_groups && ").push_bind(g);
     }
     if let Some(eq) = &a.equipment {
         q.push(" AND e.equipment ILIKE '%' || ")
@@ -313,6 +317,7 @@ pub enum Bucket {
 pub struct ProgressArgs {
     /// Give exactly one of exercise or muscle_group.
     pub exercise: Option<String>,
+    /// Matches primary muscles. Coarse names work too: back, shoulders, legs, arms.
     pub muscle_group: Option<String>,
     pub metric: Metric,
     /// Default week (ISO, Monday start, local time).
@@ -326,6 +331,7 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
     if a.exercise.is_some() == a.muscle_group.is_some() {
         return Err(user_err("give exactly one of exercise or muscle_group"));
     }
+    let groups = expand_opt(&a.muscle_group)?;
     let mut tx = db::begin_read(app, owner).await?;
     let exercise = opt_id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let metric = match a.metric {
@@ -349,7 +355,7 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
             FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN exercise e ON e.id = s.exercise_id
             WHERE w.owner_sub = $1
               AND ($3::bigint IS NULL OR s.exercise_id = $3)
-              AND ($4::text IS NULL OR $4 = ANY(e.muscle_groups))
+              AND ($4::text[] IS NULL OR e.muscle_groups && $4)
               AND ($5::timestamptz IS NULL OR s.performed_at >= $5::timestamptz)
               AND ($6::timestamptz IS NULL OR s.performed_at < $6::timestamptz)
             GROUP BY 1) x"
@@ -357,7 +363,7 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
     .bind(owner)
     .bind(bucket)
     .bind(exercise)
-    .bind(&a.muscle_group)
+    .bind(&groups)
     .bind(&a.from)
     .bind(&a.to)
     .fetch_one(&mut *tx)
@@ -449,17 +455,23 @@ pub async fn exercise_alternatives(app: &App, owner: &str, a: AlternativesArgs) 
     let exercise = resolve::id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let gym = gym_or_current(&mut tx, owner, &a.gym).await?;
     let v: Value = sqlx::query_scalar(
-        "WITH base AS (SELECT muscle_groups FROM exercise WHERE id = $3)
+        "WITH base AS (SELECT muscle_groups, secondary_muscle_groups AS secondary FROM exercise WHERE id = $3)
          SELECT json_build_object(
             'gym', (SELECT json_build_object('id', id, 'name', name, 'equipment', NULLIF(equipment, ''))
                     FROM gym WHERE id = $2 AND owner_sub = $1),
             'alternatives', coalesce((
                 SELECT json_agg(json_build_object(
                     'id', x.id, 'name', x.name, 'muscle_groups', x.muscle_groups, 'shared_muscle_groups', x.shared,
-                    'equipment', NULLIF(x.equipment, '')) ORDER BY cardinality(x.shared) DESC, x.name)
+                    'shared_secondary', x.shared_secondary, 'equipment', NULLIF(x.equipment, ''))
+                    ORDER BY cardinality(x.shared) DESC, cardinality(x.shared_secondary) DESC, x.name)
                 FROM (
                     SELECT e.id, e.name, e.muscle_groups, e.equipment,
-                           ARRAY(SELECT unnest(e.muscle_groups) INTERSECT SELECT unnest(base.muscle_groups)) AS shared
+                           ARRAY(SELECT unnest(e.muscle_groups) INTERSECT SELECT unnest(base.muscle_groups)) AS shared,
+                           -- any other overlap, primary or secondary on either side
+                           ARRAY(SELECT unnest(e.muscle_groups || e.secondary_muscle_groups)
+                                 INTERSECT SELECT unnest(base.muscle_groups || base.secondary)
+                                 EXCEPT SELECT unnest(e.muscle_groups) INTERSECT SELECT unnest(base.muscle_groups))
+                               AS shared_secondary
                     FROM exercise e CROSS JOIN base
                     WHERE e.owner_sub = $1 AND e.id <> $3 AND e.muscle_groups && base.muscle_groups) x), '[]'::json))",
     )
