@@ -368,3 +368,67 @@ async fn owners_are_isolated(pool: PgPool) {
         .contains("no workout")
     );
 }
+
+#[sqlx::test]
+async fn equipment_has_a_description_separate_from_gym_notes(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    setup::gym_equipment_set(
+        &app,
+        ME,
+        a(json!({"gym": "ndsm", "items": [
+            {"name": "leg press", "description": "45 degree plate-loaded sled", "notes": "two of them, upstairs"}
+        ]})),
+    )
+    .await
+    .unwrap();
+    let gym = setup::gym_get(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    let lp = gym["equipment_present"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "leg press")
+        .unwrap()
+        .clone();
+    assert_eq!(lp["description"], "45 degree plate-loaded sled");
+    assert_eq!(lp["notes"], "two of them, upstairs");
+
+    // Updating the kind leaves the unset fields alone and is visible everywhere.
+    let eq = setup::equipment_update(&app, ME, a(json!({"equipment": "legpress", "aliases": ["sled"]})))
+        .await
+        .unwrap();
+    assert_eq!(eq["description"], "45 degree plate-loaded sled");
+    assert_eq!(eq["aliases"], json!(["sled"]));
+    let eq = setup::equipment_update(
+        &app,
+        ME,
+        a(json!({"equipment": "sled", "description": "45° sled, plates on the side"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(eq["description"], "45° sled, plates on the side");
+    let list = setup::equipment_list(&app, ME).await.unwrap();
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["description"] == "45° sled, plates on the side")
+    );
+
+    let hits = search::search(&app, ME, a(json!({"query": "plates"}))).await.unwrap();
+    assert_eq!(hits["notes"][0]["type"], "equipment");
+    assert_eq!(hits["notes"][0]["name"], "leg press");
+
+    // Exercise descriptions show up in search results too.
+    setup::exercise_update(
+        &app,
+        ME,
+        a(json!({"exercise": "push-up", "description": "hands under shoulders, chest to floor"})),
+    )
+    .await
+    .unwrap();
+    let ex = setup::exercise_search(&app, ME, a(json!({"query": "push-up"})))
+        .await
+        .unwrap();
+    assert_eq!(ex[0]["description"], "hands under shoulders, chest to floor");
+}

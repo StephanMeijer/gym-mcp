@@ -161,7 +161,8 @@ async fn gym_json(tx: &mut Tx, owner: &str, id: i64) -> AppResult<Value> {
             'inventory_complete', g.inventory_complete,
             'equipment_present', coalesce((
                 SELECT json_agg(json_build_object(
-                    'name', eq.name, 'category', eq.category, 'quantity', ge.quantity,
+                    'name', eq.name, 'category', eq.category, 'description', NULLIF(eq.description, ''),
+                    'quantity', ge.quantity,
                     'available_weights_kg', ge.available_weights_kg, 'max_load_kg', ge.max_load_kg,
                     'notes', NULLIF(ge.notes, ''), 'verified_at', ge.verified_at) ORDER BY eq.category, eq.name)
                 FROM gym_equipment ge JOIN equipment eq ON eq.id = ge.equipment_id
@@ -239,26 +240,36 @@ pub enum Presence {
     Absent,
 }
 
-/// Finds equipment by name (fuzzy) or creates it. Ambiguous names are an error.
-async fn upsert_equipment(tx: &mut Tx, owner: &str, name: &str, category: Option<Category>) -> AppResult<i64> {
+/// Finds equipment by name (fuzzy) or creates it; given fields overwrite. Ambiguous names are an error.
+async fn upsert_equipment(
+    tx: &mut Tx,
+    owner: &str,
+    name: &str,
+    category: Option<Category>,
+    description: Option<&str>,
+) -> AppResult<i64> {
+    let category = category.map(Category::as_str);
     if let Some(id) = resolve::existing_id(tx, owner, Kind::Equipment, name).await? {
-        if let Some(c) = category {
-            sqlx::query("UPDATE equipment SET category = $2 WHERE id = $1")
-                .bind(id)
-                .bind(c.as_str())
-                .execute(&mut **tx)
-                .await?;
-        }
+        sqlx::query(
+            "UPDATE equipment SET category = coalesce($2, category), description = coalesce($3, description) WHERE id = $1",
+        )
+        .bind(id)
+        .bind(category)
+        .bind(description)
+        .execute(&mut **tx)
+        .await?;
         return Ok(id);
     }
-    Ok(
-        sqlx::query_scalar("INSERT INTO equipment (owner_sub, name, category) VALUES ($1, btrim($2), $3) RETURNING id")
-            .bind(owner)
-            .bind(name)
-            .bind(category.unwrap_or(Category::Accessory).as_str())
-            .fetch_one(&mut **tx)
-            .await?,
+    Ok(sqlx::query_scalar(
+        "INSERT INTO equipment (owner_sub, name, category, description)
+         VALUES ($1, btrim($2), coalesce($3, 'accessory'), coalesce($4, '')) RETURNING id",
     )
+    .bind(owner)
+    .bind(name)
+    .bind(category)
+    .bind(description)
+    .fetch_one(&mut **tx)
+    .await?)
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -268,11 +279,14 @@ pub struct EquipmentItem {
     /// Default present. Use absent when you've confirmed the gym does NOT have it.
     pub status: Option<Presence>,
     pub category: Option<Category>,
+    /// What this kind of equipment is, the same at every gym ("45° plate-loaded leg press").
+    pub description: Option<String>,
     pub quantity: Option<i32>,
     /// For free weights: the weights on the rack, e.g. [2, 4, 6, …, 40].
     pub available_weights_kg: Option<Vec<f64>>,
     /// For machines: the heaviest setting.
     pub max_load_kg: Option<f64>,
+    /// About it at THIS gym ("2×, upstairs by the window").
     pub notes: Option<String>,
 }
 
@@ -287,7 +301,7 @@ pub async fn gym_equipment_set(app: &App, owner: &str, a: GymEquipmentSetArgs) -
     let mut tx = db::begin(app, owner).await?;
     let gym_id = resolve::id(&mut tx, owner, Kind::Gym, &a.gym).await?;
     for it in &a.items {
-        let eq_id = upsert_equipment(&mut tx, owner, &it.name, it.category).await?;
+        let eq_id = upsert_equipment(&mut tx, owner, &it.name, it.category, it.description.as_deref()).await?;
         let status = if it.status == Some(Presence::Absent) {
             "absent"
         } else {
@@ -342,14 +356,47 @@ pub async fn gym_equipment_forget(app: &App, owner: &str, a: GymEquipmentForgetA
     Ok(v)
 }
 
+const EQUIPMENT_JSON: &str = "json_build_object('id', id, 'name', name, 'aliases', aliases, 'category', category,
+                                               'description', NULLIF(description, ''))";
+
 pub async fn equipment_list(app: &App, owner: &str) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
-    let v: Value = sqlx::query_scalar(
-        "SELECT coalesce(json_agg(json_build_object('id', id, 'name', name, 'aliases', aliases, 'category', category)
-                                  ORDER BY category, name), '[]'::json)
-         FROM equipment WHERE owner_sub = $1",
-    )
+    let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT coalesce(json_agg({EQUIPMENT_JSON} ORDER BY category, name), '[]'::json)
+         FROM equipment WHERE owner_sub = $1"
+    )))
     .bind(owner)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(v)
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct EquipmentUpdateArgs {
+    /// Equipment name, alias, or id.
+    pub equipment: String,
+    pub name: Option<String>,
+    /// Replaces the alias list.
+    pub aliases: Option<Vec<String>>,
+    pub category: Option<Category>,
+    /// What this kind of equipment is, the same at every gym. Gym-specific details go in gym_equipment_set notes.
+    pub description: Option<String>,
+}
+
+pub async fn equipment_update(app: &App, owner: &str, a: EquipmentUpdateArgs) -> AppResult<Value> {
+    let mut tx = db::begin(app, owner).await?;
+    let id = resolve::id(&mut tx, owner, Kind::Equipment, &a.equipment).await?;
+    let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
+        "UPDATE equipment SET name = coalesce(btrim($2), name), aliases = coalesce($3, aliases),
+                              category = coalesce($4, category), description = coalesce($5, description)
+         WHERE id = $1 RETURNING {EQUIPMENT_JSON}"
+    )))
+    .bind(id)
+    .bind(&a.name)
+    .bind(&a.aliases)
+    .bind(a.category.map(Category::as_str))
+    .bind(&a.description)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -379,7 +426,7 @@ async fn set_exercise_equipment(tx: &mut Tx, owner: &str, exercise_id: i64, name
         .execute(&mut **tx)
         .await?;
     for n in names {
-        let eq_id = upsert_equipment(tx, owner, n, None).await?;
+        let eq_id = upsert_equipment(tx, owner, n, None, None).await?;
         sqlx::query("INSERT INTO exercise_equipment VALUES ($1, $2) ON CONFLICT DO NOTHING")
             .bind(exercise_id)
             .bind(eq_id)
@@ -491,7 +538,8 @@ pub async fn exercise_search(app: &App, owner: &str, a: ExerciseSearchArgs) -> A
     let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
         "WITH {AVAILABILITY_CTE}
          SELECT coalesce(json_agg(json_build_object(
-                    'id', e.id, 'name', e.name, 'aliases', e.aliases, 'muscle_groups', e.muscle_groups,
+                    'id', e.id, 'name', e.name, 'aliases', e.aliases, 'description', NULLIF(e.description, ''),
+                    'muscle_groups', e.muscle_groups,
                     'equipment', coalesce(av.equipment, (SELECT array_agg(eq.name ORDER BY eq.name) FROM exercise_equipment ee
                                                          JOIN equipment eq ON eq.id = ee.equipment_id WHERE ee.exercise_id = e.id)),
                     'availability', av.availability,
