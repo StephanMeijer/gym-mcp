@@ -145,18 +145,18 @@ pub async fn workout_json(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResul
     v.ok_or_else(|| user_err(format!("no workout with id {workout_id}")))
 }
 
-async fn parse_time(tx: &mut Tx, s: &str) -> AppResult<DateTime<Utc>> {
+pub(crate) async fn parse_time(tx: &mut Tx, s: &str) -> AppResult<DateTime<Utc>> {
     Ok(sqlx::query_scalar("SELECT $1::timestamptz")
         .bind(s)
         .fetch_one(&mut **tx)
         .await?)
 }
 
-async fn now(tx: &mut Tx) -> AppResult<DateTime<Utc>> {
+pub(crate) async fn now(tx: &mut Tx) -> AppResult<DateTime<Utc>> {
     Ok(sqlx::query_scalar("SELECT now()").fetch_one(&mut **tx).await?)
 }
 
-fn not_future(at: DateTime<Utc>, now: DateTime<Utc>) -> AppResult<()> {
+pub(crate) fn not_future(at: DateTime<Utc>, now: DateTime<Utc>) -> AppResult<()> {
     if at > now + MAX_FUTURE {
         return Err(user_err(
             "that time is in the future; pass the time the set was actually performed",

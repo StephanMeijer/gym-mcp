@@ -118,6 +118,7 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
     for k in ["goal", "goals_notes", "priority_muscle_groups", "limitations"] {
         v[k] = settings[k].clone();
     }
+    v["body_weight"] = crate::measurement::body_weight_json(&mut tx, owner).await?;
     tx.commit().await?;
     Ok(json!({"overview": v, "closed_stale": closed}))
 }

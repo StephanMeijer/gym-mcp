@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::auth::Owner;
 use crate::db::{App, AppError, AppResult};
+use crate::measurement::*;
 use crate::search::*;
 use crate::setup::*;
 use crate::workout::*;
@@ -48,6 +49,8 @@ at this gym; check machine_source in the result. Note in the gym's equipment tex
 (\"leg press: Technogym + Hammer Strength\"). last_session in training_overview is from the same machine.
 Cardio: exercises with kind cardio. \"20 min bike, level 8, 7.5 km\" → one set with duration_s 1200, distance_m 7500, \
 intensity \"level 8\". progress/personal_records/set_search report distance and pace (seconds per km).
+Body weight: whenever the user mentions their weight (\"82.4 this morning\"), measurement_add (unit lb if they gave pounds). \
+training_overview.body_weight has the latest and its 4-week change; use it to judge a cut or bulk.
 Times: answers are in the user's timezone; inputs may be RFC 3339 or local (\"2026-11-02 19:40\").
 Photos stay with you; send only text.";
 
@@ -312,9 +315,60 @@ impl GymServer {
         call!(self, p, set_delete, a)
     }
 
+    // ----- measurements -----
+    #[tool(
+        description = "Log a body measurement (body weight; lb is converted to kg), optionally at a past measured_at.",
+        annotations(
+            title = "Log measurement",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn measurement_add(&self, p: P, a: Parameters<MeasurementAddArgs>) -> R {
+        call!(self, p, measurement_add, a)
+    }
+
+    #[tool(
+        description = "Body measurements over time, newest first, optionally within from-to.",
+        annotations(title = "List measurements", read_only_hint = true, open_world_hint = false)
+    )]
+    async fn measurement_list(&self, p: P, a: Parameters<MeasurementListArgs>) -> R {
+        call!(self, p, measurement_list, a)
+    }
+
+    #[tool(
+        description = "Correct a measurement's value, time or notes.",
+        annotations(
+            title = "Correct measurement",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn measurement_update(&self, p: P, a: Parameters<MeasurementUpdateArgs>) -> R {
+        call!(self, p, measurement_update, a)
+    }
+
+    #[tool(
+        description = "Delete a measurement.",
+        annotations(
+            title = "Delete measurement",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn measurement_delete(&self, p: P, a: Parameters<MeasurementDeleteArgs>) -> R {
+        call!(self, p, measurement_delete, a)
+    }
+
     // ----- search & analysis -----
     #[tool(
-        description = "Everything needed to recommend what to do next at a gym: its equipment text, every exercise with its equipment text and last session, per-muscle recency, weekly/4-week weighted sets, training days and RPE, today's work and the goal.",
+        description = "Everything needed to recommend what to do next at a gym: its equipment text, every exercise with its equipment text and last session, per-muscle recency, weekly/4-week weighted sets, training days and RPE, today's work, the goal and the latest body weight with its 4-week change.",
         annotations(title = "Training overview", read_only_hint = true, open_world_hint = false)
     )]
     async fn training_overview(&self, p: P, a: Parameters<OverviewArgs>) -> R {
@@ -390,7 +444,7 @@ mod tests {
     #[test]
     fn every_tool_is_annotated_and_closed_world() {
         let tools = GymServer::tool_router().list_all();
-        assert_eq!(tools.len(), 25);
+        assert_eq!(tools.len(), 29);
         for t in &tools {
             let a = t
                 .annotations
