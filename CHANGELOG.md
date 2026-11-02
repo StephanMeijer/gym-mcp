@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/StephanMeijer/gym-mcp/compare/v0.2.0...v0.3.0) - 2026-11-02
+
+### Added
+
+- *(settings)* goals notes, priority muscle groups and limitations
+- *(search)* muscle_group_volume for any period
+- *(overview)* per-muscle frequency, volume and effort
+- *(sets)* record the machine brand per set and compare history per machine
+- *(exercises)* [**breaking**] split muscle groups into primary and secondary with a finer list
+- *(sets)* log cardio with distance, intensity and an exercise kind
+
 ## [0.2.0](https://github.com/StephanMeijer/gym-mcp/compare/v0.1.4...v0.2.0) - 2026-11-02
 
 ### Added
