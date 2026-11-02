@@ -96,3 +96,7 @@ identity_providers:
 This needs Authelia ≥ 4.39 for JWT access tokens. Check the redirect URIs against Claude's and ChatGPT's current docs.
 
 Then, in Claude: **Settings → Connectors → Add custom connector**, with URL `https://gym.example.com/mcp` and the client ID/secret under advanced settings.
+
+## License
+
+[MPL-2.0](LICENSE)
