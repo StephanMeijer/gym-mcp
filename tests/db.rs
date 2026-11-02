@@ -1585,15 +1585,16 @@ async fn batch_update_and_delete_are_all_or_nothing(pool: PgPool) {
         .collect();
     let sets = |w: &Value| w["exercises"][0]["sets"].as_array().unwrap().clone();
 
-    let w = workout::set_update(
+    // set_ids always returns {"workouts": [...]}, even when the sets share one workout.
+    let w = &workout::set_update(
         &app,
         ME,
         a(json!({"set_ids": ids, "weight_kg": 22.5, "variant": "vertical handles"})),
     )
     .await
-    .unwrap();
+    .unwrap()["workouts"][0];
     assert!(
-        sets(&w)
+        sets(w)
             .iter()
             .all(|s| s["weight_kg"] == 22.5 && s["variant"] == "vertical handles")
     );
@@ -1628,8 +1629,27 @@ async fn batch_update_and_delete_are_all_or_nothing(pool: PgPool) {
 
     let msg = user_msg(workout::set_delete(&app, ME, a(json!({"set_id": ids[0], "set_ids": [ids[1]]}))).await);
     assert!(msg.contains("not both"), "{msg}");
+    let msg = user_msg(workout::set_delete(&app, ME, a(json!({}))).await);
+    assert_eq!(msg, "pass set_id or set_ids");
+    let msg = user_msg(
+        workout::set_update(
+            &app,
+            ME,
+            a(json!({"set_ids": [ids[0], ids[1]], "performed_at": hours_ago(1)})),
+        )
+        .await,
+    );
+    assert!(msg.contains("one set at a time"), "{msg}");
+    // A single id in set_ids may still move.
+    workout::set_update(&app, ME, a(json!({"set_ids": [ids[2]], "performed_at": hours_ago(1)})))
+        .await
+        .unwrap();
     let w = workout::set_delete(&app, ME, a(json!({"set_ids": [ids[0], ids[1], ids[0]]})))
         .await
         .unwrap();
-    assert_eq!(sets(&w).len(), 1);
+    assert_eq!(sets(&w["workouts"][0]).len(), 1);
+    let w = workout::set_delete(&app, ME, a(json!({"set_id": ids[2]})))
+        .await
+        .unwrap();
+    assert!(w["workouts"].is_null() && w["workout_id"].is_number(), "{w}");
 }

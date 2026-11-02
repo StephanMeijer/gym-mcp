@@ -685,7 +685,8 @@ fn set_ids(set_id: Option<i64>, set_ids: &Option<Vec<i64>>) -> AppResult<Vec<i64
     let mut ids = match (set_id, set_ids) {
         (Some(id), None) => vec![id],
         (None, Some(ids)) => ids.clone(),
-        _ => return Err(user_err("pass set_id or set_ids, not both")),
+        (None, None) => return Err(user_err("pass set_id or set_ids")),
+        (Some(_), Some(_)) => return Err(user_err("pass set_id or set_ids, not both")),
     };
     let mut seen = std::collections::HashSet::new();
     ids.retain(|id| seen.insert(*id));
@@ -703,20 +704,21 @@ fn for_set(id: i64) -> impl Fn(AppError) -> AppError {
     }
 }
 
-/// The result of a correction: the workout as before, or each workout when the sets span several.
-async fn touched_json(tx: &mut Tx, owner: &str, workouts: &[i64]) -> AppResult<Value> {
+/// The result of a correction: the workout for set_id, {"workouts": [...]} for set_ids, so the shape follows the argument.
+async fn touched_json(tx: &mut Tx, owner: &str, batch: bool, workouts: &[i64]) -> AppResult<Value> {
     let mut out = Vec::new();
     for &w in workouts {
         out.push(workout_json(tx, owner, w).await?);
     }
-    Ok(match out.len() {
-        1 => out.remove(0),
-        _ => json!({"workouts": out}),
-    })
+    Ok(if batch { json!({"workouts": out}) } else { out.remove(0) })
 }
 
 pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<Value> {
     let ids = set_ids(a.set_id, &a.set_ids)?;
+    if a.performed_at.is_some() && ids.len() > 1 {
+        // The same instant on every set would collapse their order and rest spacing.
+        return Err(user_err("performed_at applies to one set at a time"));
+    }
     let mut tx = db::begin(app, owner).await?;
     let exercise_id = match &a.exercise {
         Some(e) => Some(resolve::id(&mut tx, owner, Kind::Exercise, e).await?),
@@ -737,7 +739,7 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
             workouts.push(w);
         }
     }
-    let w = touched_json(&mut tx, owner, &workouts).await?;
+    let w = touched_json(&mut tx, owner, a.set_ids.is_some(), &workouts).await?;
     tx.commit().await?;
     Ok(w)
 }
@@ -824,7 +826,7 @@ pub async fn set_delete(app: &App, owner: &str, a: SetDeleteArgs) -> AppResult<V
             workouts.push(w);
         }
     }
-    let w = touched_json(&mut tx, owner, &workouts).await?;
+    let w = touched_json(&mut tx, owner, a.set_ids.is_some(), &workouts).await?;
     tx.commit().await?;
     Ok(w)
 }

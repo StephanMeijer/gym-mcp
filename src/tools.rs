@@ -301,7 +301,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Correct one or more logged sets (weight, reps, time, exercise, notes). Pass set_ids to apply the same change to several sets at once; all or nothing.",
+        description = "Correct one or more logged sets (weight, reps, time, exercise, notes). Pass set_ids to apply the same change to several sets at once; all or nothing. Returns the workout for set_id, {\"workouts\": [...]} for set_ids. performed_at takes a single set.",
         annotations(
             title = "Correct set",
             read_only_hint = false,
@@ -315,7 +315,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Delete one or more logged sets (set_ids for several at once; all or nothing).",
+        description = "Delete one or more logged sets (set_ids for several at once; all or nothing). Returns the workout for set_id, {\"workouts\": [...]} for set_ids.",
         annotations(
             title = "Delete set",
             read_only_hint = false,
