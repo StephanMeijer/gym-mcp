@@ -26,21 +26,50 @@ fn claims(aud: &str, exp_offset: i64) -> serde_json::Value {
 
 #[test]
 fn valid_token_yields_sub() {
-    assert_eq!(validate_token(&token(claims(AUD, 300), "test"), &keys(), ISS, AUD).unwrap(), "alice");
+    assert_eq!(
+        validate_token(&token(claims(AUD, 300), "test"), &keys(), ISS, AUD).unwrap(),
+        "alice"
+    );
 }
 
 #[test]
 fn rejects_wrong_audience_expired_unknown_kid_and_tampering() {
-    assert!(validate_token(&token(claims("https://other.example.com", 300), "test"), &keys(), ISS, AUD).is_err());
+    assert!(
+        validate_token(
+            &token(claims("https://other.example.com", 300), "test"),
+            &keys(),
+            ISS,
+            AUD
+        )
+        .is_err()
+    );
     assert!(validate_token(&token(claims(AUD, -600), "test"), &keys(), ISS, AUD).is_err());
-    assert!(validate_token(&token(claims(AUD, 300), "nope"), &keys(), ISS, AUD).unwrap_err().starts_with("unknown kid"));
-    assert!(validate_token(&token(claims(AUD, 300), "test"), &keys(), "https://evil.example.com", AUD).is_err());
+    assert!(
+        validate_token(&token(claims(AUD, 300), "nope"), &keys(), ISS, AUD)
+            .unwrap_err()
+            .starts_with("unknown kid")
+    );
+    assert!(
+        validate_token(
+            &token(claims(AUD, 300), "test"),
+            &keys(),
+            "https://evil.example.com",
+            AUD
+        )
+        .is_err()
+    );
 
     let t = token(claims(AUD, 300), "test");
     let mut parts: Vec<&str> = t.split('.').collect();
-    let forged = token(json!({"iss": ISS, "aud": [AUD], "sub": "mallory", "exp": chrono::Utc::now().timestamp() + 300}), "test");
+    let forged = token(
+        json!({"iss": ISS, "aud": [AUD], "sub": "mallory", "exp": chrono::Utc::now().timestamp() + 300}),
+        "test",
+    );
     parts[1] = forged.split('.').nth(1).unwrap();
-    assert!(validate_token(&parts.join("."), &keys(), ISS, AUD).is_err(), "payload swapped under old signature");
+    assert!(
+        validate_token(&parts.join("."), &keys(), ISS, AUD).is_err(),
+        "payload swapped under old signature"
+    );
 }
 
 #[test]

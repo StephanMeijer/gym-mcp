@@ -31,8 +31,15 @@ pub struct Auth {
 
 const REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(60);
 const ASYMMETRIC: &[Algorithm] = &[
-    Algorithm::RS256, Algorithm::RS384, Algorithm::RS512, Algorithm::PS256, Algorithm::PS384, Algorithm::PS512,
-    Algorithm::ES256, Algorithm::ES384, Algorithm::EdDSA,
+    Algorithm::RS256,
+    Algorithm::RS384,
+    Algorithm::RS512,
+    Algorithm::PS256,
+    Algorithm::PS384,
+    Algorithm::PS512,
+    Algorithm::ES256,
+    Algorithm::ES384,
+    Algorithm::EdDSA,
 ];
 
 #[derive(Deserialize)]
@@ -61,10 +68,34 @@ impl Auth {
     pub async fn discover(issuer: String, resource: String) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).build()?;
         let url = format!("{}/.well-known/openid-configuration", issuer.trim_end_matches('/'));
-        let conf: serde_json::Value = http.get(&url).send().await?.error_for_status()?.json().await.context("openid-configuration")?;
-        let jwks_uri = conf["jwks_uri"].as_str().context("discovery document has no jwks_uri")?.to_owned();
-        let keys: JwkSet = http.get(&jwks_uri).send().await?.error_for_status()?.json().await.context("jwks")?;
-        Ok(Self { issuer, resource, jwks_uri, keys: RwLock::new((keys, Instant::now())), http, dev_sub: None })
+        let conf: serde_json::Value = http
+            .get(&url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await
+            .context("openid-configuration")?;
+        let jwks_uri = conf["jwks_uri"]
+            .as_str()
+            .context("discovery document has no jwks_uri")?
+            .to_owned();
+        let keys: JwkSet = http
+            .get(&jwks_uri)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await
+            .context("jwks")?;
+        Ok(Self {
+            issuer,
+            resource,
+            jwks_uri,
+            keys: RwLock::new((keys, Instant::now())),
+            http,
+            dev_sub: None,
+        })
     }
 
     pub fn dev(sub: String, resource: String) -> Self {
@@ -97,11 +128,21 @@ impl Auth {
     }
 
     async fn fetch_keys(&self) -> anyhow::Result<JwkSet> {
-        Ok(self.http.get(&self.jwks_uri).send().await?.error_for_status()?.json().await?)
+        Ok(self
+            .http
+            .get(&self.jwks_uri)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
     }
 
     pub fn metadata_url(&self) -> String {
-        format!("{}/.well-known/oauth-protected-resource", self.resource.trim_end_matches('/'))
+        format!(
+            "{}/.well-known/oauth-protected-resource",
+            self.resource.trim_end_matches('/')
+        )
     }
 }
 
@@ -125,7 +166,9 @@ pub async fn require_bearer(State(auth): State<Arc<Auth>>, mut req: Request, nex
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")));
-    let Some(token) = token else { return unauthorized(&auth, None) };
+    let Some(token) = token else {
+        return unauthorized(&auth, None);
+    };
     match auth.validate(token).await {
         Ok(sub) => {
             req.extensions_mut().insert(Owner(sub));

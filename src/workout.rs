@@ -51,13 +51,19 @@ pub enum StaleAction {
 }
 
 pub fn stale_action(set_count: i64, has_notes: bool) -> StaleAction {
-    if set_count == 0 && !has_notes { StaleAction::Delete } else { StaleAction::Finish }
+    if set_count == 0 && !has_notes {
+        StaleAction::Delete
+    } else {
+        StaleAction::Finish
+    }
 }
 
 /// Closes the open workout if its last activity is older than `stale_after`.
 /// Returns a description of what was done, for the tool result.
 pub async fn close_stale(app: &App, tx: &mut Tx, owner: &str) -> AppResult<Option<Value>> {
-    let Some(open) = open_workout(tx, owner).await? else { return Ok(None) };
+    let Some(open) = open_workout(tx, owner).await? else {
+        return Ok(None);
+    };
     let now: DateTime<Utc> = sqlx::query_scalar("SELECT now()").fetch_one(&mut **tx).await?;
     let stale_after = Duration::from_std(app.stale_after).unwrap_or(Duration::hours(3));
     if open.last_activity >= now - stale_after {
@@ -66,7 +72,10 @@ pub async fn close_stale(app: &App, tx: &mut Tx, owner: &str) -> AppResult<Optio
     let action = stale_action(open.set_count, open.has_notes);
     match action {
         StaleAction::Delete => {
-            sqlx::query("DELETE FROM workout WHERE id = $1").bind(open.id).execute(&mut **tx).await?;
+            sqlx::query("DELETE FROM workout WHERE id = $1")
+                .bind(open.id)
+                .execute(&mut **tx)
+                .await?;
         }
         StaleAction::Finish => {
             sqlx::query("UPDATE workout SET finished_at = $2, finish_reason = 'stale' WHERE id = $1")
@@ -76,7 +85,10 @@ pub async fn close_stale(app: &App, tx: &mut Tx, owner: &str) -> AppResult<Optio
                 .await?;
         }
     }
-    let at: Value = sqlx::query_scalar("SELECT to_json($1::timestamptz)").bind(open.last_activity).fetch_one(&mut **tx).await?;
+    let at: Value = sqlx::query_scalar("SELECT to_json($1::timestamptz)")
+        .bind(open.last_activity)
+        .fetch_one(&mut **tx)
+        .await?;
     Ok(Some(json!({
         "workout_id": open.id,
         "gym": open.gym,
@@ -124,7 +136,10 @@ pub async fn workout_json(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResul
 }
 
 async fn parse_time(tx: &mut Tx, s: &str) -> AppResult<DateTime<Utc>> {
-    Ok(sqlx::query_scalar("SELECT $1::timestamptz").bind(s).fetch_one(&mut **tx).await?)
+    Ok(sqlx::query_scalar("SELECT $1::timestamptz")
+        .bind(s)
+        .fetch_one(&mut **tx)
+        .await?)
 }
 
 async fn now(tx: &mut Tx) -> AppResult<DateTime<Utc>> {
@@ -133,7 +148,9 @@ async fn now(tx: &mut Tx) -> AppResult<DateTime<Utc>> {
 
 fn not_future(at: DateTime<Utc>, now: DateTime<Utc>) -> AppResult<()> {
     if at > now + MAX_FUTURE {
-        return Err(user_err("that time is in the future; pass the time the set was actually performed"));
+        return Err(user_err(
+            "that time is in the future; pass the time the set was actually performed",
+        ));
     }
     Ok(())
 }
@@ -188,12 +205,13 @@ pub async fn start(app: &App, owner: &str, a: StartArgs) -> AppResult<Value> {
         None => now,
     };
     not_future(started_at, now)?;
-    let id: i64 = sqlx::query_scalar("INSERT INTO workout (owner_sub, gym_id, started_at) VALUES ($1, $2, $3) RETURNING id")
-        .bind(owner)
-        .bind(gym_id)
-        .bind(started_at)
-        .fetch_one(&mut *tx)
-        .await?;
+    let id: i64 =
+        sqlx::query_scalar("INSERT INTO workout (owner_sub, gym_id, started_at) VALUES ($1, $2, $3) RETURNING id")
+            .bind(owner)
+            .bind(gym_id)
+            .bind(started_at)
+            .fetch_one(&mut *tx)
+            .await?;
     let w = workout_json(&mut tx, owner, id).await?;
     tx.commit().await?;
     Ok(json!({"status": "started", "workout": w, "superseded": superseded, "closed_stale": closed}))
@@ -213,7 +231,10 @@ pub struct AddPastArgs {
 pub async fn add_past(app: &App, owner: &str, a: AddPastArgs) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
     let gym_id = resolve::id(&mut tx, owner, Kind::Gym, &a.gym).await?;
-    let (start, end) = (parse_time(&mut tx, &a.started_at).await?, parse_time(&mut tx, &a.finished_at).await?);
+    let (start, end) = (
+        parse_time(&mut tx, &a.started_at).await?,
+        parse_time(&mut tx, &a.finished_at).await?,
+    );
     let now = now(&mut tx).await?;
     not_future(end, now)?;
     if end < start {
@@ -247,7 +268,9 @@ pub async fn finish(app: &App, owner: &str, a: FinishArgs) -> AppResult<Value> {
         tx.commit().await?;
         return Ok(json!({"status": "already auto-finished because it was stale", "closed_stale": closed}));
     }
-    let open = open_workout(&mut tx, owner).await?.ok_or_else(|| user_err("no open workout"))?;
+    let open = open_workout(&mut tx, owner)
+        .await?
+        .ok_or_else(|| user_err("no open workout"))?;
     let now = now(&mut tx).await?;
     let at = match &a.finished_at {
         Some(s) => parse_time(&mut tx, s).await?,
@@ -321,7 +344,9 @@ pub async fn update(app: &App, owner: &str, a: UpdateArgs) -> AppResult<Value> {
     .fetch_one(&mut *tx)
     .await?;
     if outside {
-        return Err(user_err("some sets would fall outside the workout's start/finish; adjust those sets first"));
+        return Err(user_err(
+            "some sets would fall outside the workout's start/finish; adjust those sets first",
+        ));
     }
     let w = workout_json(&mut tx, owner, a.workout_id).await?;
     tx.commit().await?;
@@ -376,7 +401,11 @@ async fn target(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResult<Target> 
             .fetch_optional(&mut **tx)
             .await?;
     let (started_at, finished_at) = row.ok_or_else(|| user_err(format!("no workout with id {workout_id}")))?;
-    Ok(Target { id: workout_id, started_at, finished_at })
+    Ok(Target {
+        id: workout_id,
+        started_at,
+        finished_at,
+    })
 }
 
 /// Checks `at` against the workout window. For an open workout an earlier set moves the start back.
@@ -389,7 +418,11 @@ async fn fit_in_window(tx: &mut Tx, t: &mut Target, at: DateTime<Utc>, now: Date
             ));
         }
     } else if at < t.started_at {
-        sqlx::query("UPDATE workout SET started_at = $2 WHERE id = $1").bind(t.id).bind(at).execute(&mut **tx).await?;
+        sqlx::query("UPDATE workout SET started_at = $2 WHERE id = $1")
+            .bind(t.id)
+            .bind(at)
+            .execute(&mut **tx)
+            .await?;
         t.started_at = at;
     }
     Ok(())
@@ -527,7 +560,10 @@ pub struct SetDeleteArgs {
 pub async fn set_delete(app: &App, owner: &str, a: SetDeleteArgs) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
     let workout_id = set_workout(&mut tx, owner, a.set_id).await?;
-    sqlx::query("DELETE FROM workout_set WHERE id = $1").bind(a.set_id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM workout_set WHERE id = $1")
+        .bind(a.set_id)
+        .execute(&mut *tx)
+        .await?;
     let w = workout_json(&mut tx, owner, workout_id).await?;
     tx.commit().await?;
     Ok(w)

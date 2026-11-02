@@ -4,8 +4,8 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 // Dynamic SQL only interpolates compile-time constants and enum-mapped literals; user input is always bound.
-use sqlx::AssertSqlSafe;
 use serde_json::{Value, json};
+use sqlx::AssertSqlSafe;
 use sqlx::{Postgres, QueryBuilder};
 
 use crate::db::{self, App, AppResult, Tx, user_err};
@@ -32,10 +32,12 @@ async fn gym_or_current(tx: &mut Tx, owner: &str, gym: &Option<String>) -> AppRe
     if gym.is_some() {
         return opt_id(tx, owner, Kind::Gym, gym).await;
     }
-    Ok(sqlx::query_scalar("SELECT gym_id FROM workout WHERE owner_sub = $1 AND finished_at IS NULL")
-        .bind(owner)
-        .fetch_optional(&mut **tx)
-        .await?)
+    Ok(
+        sqlx::query_scalar("SELECT gym_id FROM workout WHERE owner_sub = $1 AND finished_at IS NULL")
+            .bind(owner)
+            .fetch_optional(&mut **tx)
+            .await?,
+    )
 }
 
 // ---------- training_overview ----------
@@ -116,7 +118,12 @@ pub async fn search(app: &App, owner: &str, a: SearchArgs) -> AppResult<Value> {
             names.push(json!({"type": kind.table(), "id": id, "name": name, "score": (score.min(1.0) * 100.0).round() / 100.0}));
         }
     }
-    names.sort_by(|x, y| y["score"].as_f64().unwrap_or(0.0).total_cmp(&x["score"].as_f64().unwrap_or(0.0)));
+    names.sort_by(|x, y| {
+        y["score"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&x["score"].as_f64().unwrap_or(0.0))
+    });
     names.truncate(lim as usize);
     let notes: Value = sqlx::query_scalar(
         "WITH q AS (SELECT websearch_to_tsquery('simple', $2) AS q)
@@ -211,10 +218,14 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
         q.push(" AND w.gym_id = ").push_bind(id);
     }
     if let Some(f) = &a.from {
-        q.push(" AND s.performed_at >= ").push_bind(f.clone()).push("::timestamptz");
+        q.push(" AND s.performed_at >= ")
+            .push_bind(f.clone())
+            .push("::timestamptz");
     }
     if let Some(t) = &a.to {
-        q.push(" AND s.performed_at < ").push_bind(t.clone()).push("::timestamptz");
+        q.push(" AND s.performed_at < ")
+            .push_bind(t.clone())
+            .push("::timestamptz");
     }
     if let Some(v) = a.min_weight_kg {
         q.push(" AND s.weight_kg >= ").push_bind(v);
@@ -235,8 +246,13 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
         SetOrder::Volume => VOLUME.to_owned(),
         SetOrder::E1rm => E1RM.to_owned(),
     };
-    let dir = if a.desc.unwrap_or(true) { "DESC NULLS LAST" } else { "ASC NULLS LAST" };
-    q.push(format!(" ORDER BY {key} {dir}, s.performed_at DESC LIMIT ")).push_bind(limit(a.limit));
+    let dir = if a.desc.unwrap_or(true) {
+        "DESC NULLS LAST"
+    } else {
+        "ASC NULLS LAST"
+    };
+    q.push(format!(" ORDER BY {key} {dir}, s.performed_at DESC LIMIT "))
+        .push_bind(limit(a.limit));
 
     let rows: Vec<Value> = q.build_query_scalar().fetch_all(&mut *tx).await?;
     tx.commit().await?;

@@ -3,7 +3,11 @@ use std::time::Duration;
 
 use anyhow::Context;
 use axum::{Router, middleware, routing::get};
-use gym_mcp::{auth::{self, Auth}, db::App, tools::GymServer};
+use gym_mcp::{
+    auth::{self, Auth},
+    db::App,
+    tools::GymServer,
+};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
 };
@@ -24,15 +28,25 @@ fn parse_duration(s: &str) -> anyhow::Result<Duration> {
         Some('s') => (&s[..s.len() - 1], 1),
         _ => (s, 1),
     };
-    Ok(Duration::from_secs(num.trim().parse::<u64>().with_context(|| format!("bad duration {s:?}"))? * mult))
+    Ok(Duration::from_secs(
+        num.trim()
+            .parse::<u64>()
+            .with_context(|| format!("bad duration {s:?}"))?
+            * mult,
+    ))
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt().with_env_filter(env_or("RUST_LOG", "info")).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(env_or("RUST_LOG", "info"))
+        .init();
 
     let public_url = env("PUBLIC_URL")?.trim_end_matches('/').to_owned();
-    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(10).connect(&env("DATABASE_URL")?).await?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&env("DATABASE_URL")?)
+        .await?;
     sqlx::migrate!().run(&pool).await?;
     let app = App {
         pool,
@@ -48,7 +62,14 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => Auth::discover(env("OIDC_ISSUER")?, public_url.clone()).await?,
     });
 
-    let host = public_url.split("://").nth(1).unwrap_or(&public_url).split('/').next().unwrap_or_default().to_owned();
+    let host = public_url
+        .split("://")
+        .nth(1)
+        .unwrap_or(&public_url)
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
     let mcp = StreamableHttpService::new(
         move || Ok(GymServer::new(app.clone())),
         Arc::new(NeverSessionManager::default()),
@@ -69,6 +90,10 @@ async fn main() -> anyhow::Result<()> {
     let bind = env_or("BIND_ADDR", "0.0.0.0:8080");
     tracing::info!("listening on {bind}, MCP at {public_url}/mcp");
     let listener = tokio::net::TcpListener::bind(&bind).await?;
-    axum::serve(listener, router).with_graceful_shutdown(async { let _ = tokio::signal::ctrl_c().await; }).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await?;
     Ok(())
 }

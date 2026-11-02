@@ -10,7 +10,11 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 
 fn app(pool: PgPool) -> App {
-    App { pool, default_timezone: "Europe/Amsterdam".into(), stale_after: Duration::from_secs(3 * 3600) }
+    App {
+        pool,
+        default_timezone: "Europe/Amsterdam".into(),
+        stale_after: Duration::from_secs(3 * 3600),
+    }
 }
 
 fn a<T: DeserializeOwned>(v: Value) -> T {
@@ -31,8 +35,12 @@ fn user_msg(r: Result<Value, AppError>) -> String {
 const ME: &str = "alice";
 
 async fn seed(app: &App) {
-    setup::gym_create(app, ME, a(json!({"name": "Trainmore NDSM", "aliases": ["ndsm"]}))).await.unwrap();
-    setup::gym_create(app, ME, a(json!({"name": "Basic-Fit Zuid"}))).await.unwrap();
+    setup::gym_create(app, ME, a(json!({"name": "Trainmore NDSM", "aliases": ["ndsm"]})))
+        .await
+        .unwrap();
+    setup::gym_create(app, ME, a(json!({"name": "Basic-Fit Zuid"})))
+        .await
+        .unwrap();
     setup::gym_equipment_set(
         app,
         ME,
@@ -46,11 +54,21 @@ async fn seed(app: &App) {
     .unwrap();
     for (name, groups, eq) in [
         ("Leg press", json!(["quads", "glutes"]), json!(["leg press"])),
-        ("Dumbbell bench press", json!(["chest", "triceps"]), json!(["dumbbells", "flat bench"])),
+        (
+            "Dumbbell bench press",
+            json!(["chest", "triceps"]),
+            json!(["dumbbells", "flat bench"]),
+        ),
         ("Cable fly", json!(["chest"]), json!(["cable tower"])),
         ("Push-up", json!(["chest", "triceps"]), json!([])),
     ] {
-        setup::exercise_create(app, ME, a(json!({"name": name, "muscle_groups": groups, "equipment": eq}))).await.unwrap();
+        setup::exercise_create(
+            app,
+            ME,
+            a(json!({"name": name, "muscle_groups": groups, "equipment": eq})),
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -58,7 +76,9 @@ async fn seed(app: &App) {
 async fn start_resumes_same_gym_and_guards_other_gym(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
-    let first = workout::start(&app, ME, a(json!({"gym": "ndsm trainmore"}))).await.unwrap();
+    let first = workout::start(&app, ME, a(json!({"gym": "ndsm trainmore"})))
+        .await
+        .unwrap();
     assert_eq!(first["status"], "started");
     let again = workout::start(&app, ME, a(json!({"gym": "NDSM"}))).await.unwrap();
     assert_eq!(again["status"], "resumed");
@@ -67,7 +87,9 @@ async fn start_resumes_same_gym_and_guards_other_gym(pool: PgPool) {
     let msg = user_msg(workout::start(&app, ME, a(json!({"gym": "basic-fit zuid"}))).await);
     assert!(msg.contains("still open at Trainmore NDSM"), "{msg}");
 
-    let moved = workout::start(&app, ME, a(json!({"gym": "basic-fit zuid", "finish_open": true}))).await.unwrap();
+    let moved = workout::start(&app, ME, a(json!({"gym": "basic-fit zuid", "finish_open": true})))
+        .await
+        .unwrap();
     assert_eq!(moved["status"], "started");
     assert_eq!(moved["superseded"]["workout_id"], first["workout"]["workout_id"]);
 }
@@ -76,25 +98,39 @@ async fn start_resumes_same_gym_and_guards_other_gym(pool: PgPool) {
 async fn stale_workout_with_sets_closes_at_last_set(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
-    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(2)}))).await.unwrap();
-    workout::set_add(&app, ME, a(json!({"exercise": "leg press", "sets": [{"reps": 10, "weight_kg": 100, "performed_at": hours_ago(1)}]})))
+    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(2)})))
         .await
         .unwrap();
+    workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "leg press", "sets": [{"reps": 10, "weight_kg": 100, "performed_at": hours_ago(1)}]})),
+    )
+    .await
+    .unwrap();
     // Same data, seen by a server whose stale window is shorter than the gap since the last set.
-    let impatient = App { stale_after: Duration::from_secs(1800), ..app.clone() };
+    let impatient = App {
+        stale_after: Duration::from_secs(1800),
+        ..app.clone()
+    };
     let cur = workout::current(&impatient, ME).await.unwrap();
     assert!(cur["open_workout"].is_null());
     assert_eq!(cur["closed_stale"]["action"], "auto-finished (stale)");
     let past = search::workout_list(&app, ME, a(json!({}))).await.unwrap();
     assert_eq!(past[0]["finish_reason"], "stale");
-    assert_eq!(past[0]["finished_at"], past[0]["exercises"][0]["sets"][0]["performed_at"]);
+    assert_eq!(
+        past[0]["finished_at"],
+        past[0]["exercises"][0]["sets"][0]["performed_at"]
+    );
 }
 
 #[sqlx::test]
 async fn stale_empty_workout_is_deleted_and_set_add_refuses(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
-    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(4)}))).await.unwrap();
+    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(4)})))
+        .await
+        .unwrap();
     let msg = user_msg(workout::set_add(&app, ME, a(json!({"exercise": "push-up", "sets": [{"reps": 20}]}))).await);
     assert!(msg.contains("no open workout"), "{msg}");
     assert!(msg.contains("deleted"), "{msg}");
@@ -105,10 +141,16 @@ async fn stale_empty_workout_is_deleted_and_set_add_refuses(pool: PgPool) {
 async fn late_sets_order_and_move_start_back(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
-    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(1)}))).await.unwrap();
-    workout::set_add(&app, ME, a(json!({"exercise": "benchpres", "sets": [{"reps": 10, "weight_kg": 12}, {"reps": 8, "weight_kg": 14}]})))
+    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(1)})))
         .await
         .unwrap();
+    workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "benchpres", "sets": [{"reps": 10, "weight_kg": 12}, {"reps": 8, "weight_kg": 14}]})),
+    )
+    .await
+    .unwrap();
     // A forgotten warm-up set from before "arrival".
     let r = workout::set_add(
         &app,
@@ -125,7 +167,14 @@ async fn late_sets_order_and_move_start_back(pool: PgPool) {
     assert_eq!(sets[2]["set_number"], 3);
 
     let future = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-    let msg = user_msg(workout::set_add(&app, ME, a(json!({"exercise": "push-up", "sets": [{"reps": 1, "performed_at": future}]}))).await);
+    let msg = user_msg(
+        workout::set_add(
+            &app,
+            ME,
+            a(json!({"exercise": "push-up", "sets": [{"reps": 1, "performed_at": future}]})),
+        )
+        .await,
+    );
     assert!(msg.contains("future"), "{msg}");
 }
 
@@ -134,11 +183,22 @@ async fn past_workout_and_local_calendar(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
     // Mon 2025-11-03 00:30 in Amsterdam = Sun 23:30 UTC.
-    let w = workout::add_past(&app, ME, a(json!({"gym": "ndsm", "started_at": "2025-11-03 00:00", "finished_at": "2025-11-03 01:00"})))
-        .await
-        .unwrap();
+    let w = workout::add_past(
+        &app,
+        ME,
+        a(json!({"gym": "ndsm", "started_at": "2025-11-03 00:00", "finished_at": "2025-11-03 01:00"})),
+    )
+    .await
+    .unwrap();
     let id = w["workout_id"].as_i64().unwrap();
-    let msg = user_msg(workout::set_add(&app, ME, a(json!({"exercise": "leg press", "workout_id": id, "sets": [{"reps": 5}]}))).await);
+    let msg = user_msg(
+        workout::set_add(
+            &app,
+            ME,
+            a(json!({"exercise": "leg press", "workout_id": id, "sets": [{"reps": 5}]})),
+        )
+        .await,
+    );
     assert!(msg.contains("performed_at"), "{msg}");
     workout::set_add(
         &app,
@@ -148,11 +208,28 @@ async fn past_workout_and_local_calendar(pool: PgPool) {
     .await
     .unwrap();
 
-    let week = search::progress(&app, ME, a(json!({"exercise": "leg press", "metric": "top_weight", "bucket": "week"}))).await.unwrap();
+    let week = search::progress(
+        &app,
+        ME,
+        a(json!({"exercise": "leg press", "metric": "top_weight", "bucket": "week"})),
+    )
+    .await
+    .unwrap();
     assert_eq!(week["series"][0]["period_start"], "2025-11-03");
-    setup::settings_update(&app, ME, a(json!({"timezone": "UTC"}))).await.unwrap();
-    let week = search::progress(&app, ME, a(json!({"exercise": "leg press", "metric": "top_weight", "bucket": "week"}))).await.unwrap();
-    assert_eq!(week["series"][0]["period_start"], "2025-10-27", "in UTC it was still Sunday");
+    setup::settings_update(&app, ME, a(json!({"timezone": "UTC"})))
+        .await
+        .unwrap();
+    let week = search::progress(
+        &app,
+        ME,
+        a(json!({"exercise": "leg press", "metric": "top_weight", "bucket": "week"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        week["series"][0]["period_start"], "2025-10-27",
+        "in UTC it was still Sunday"
+    );
 
     let msg = user_msg(setup::settings_update(&app, ME, a(json!({"timezone": "Mars/Olympus"}))).await);
     assert!(msg.contains("invalid"), "{msg}");
@@ -164,7 +241,9 @@ async fn availability_distinguishes_unknown_from_absent(pool: PgPool) {
     seed(&app).await;
     let by_name = |v: &Value, n: &str| v.as_array().unwrap().iter().find(|e| e["name"] == n).cloned();
 
-    let r = setup::exercise_search(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    let r = setup::exercise_search(&app, ME, a(json!({"gym": "ndsm"})))
+        .await
+        .unwrap();
     assert_eq!(by_name(&r, "Leg press").unwrap()["availability"], "available");
     assert_eq!(by_name(&r, "Push-up").unwrap()["availability"], "available");
     let bench = by_name(&r, "Dumbbell bench press").unwrap();
@@ -172,16 +251,31 @@ async fn availability_distinguishes_unknown_from_absent(pool: PgPool) {
     assert_eq!(bench["unknown_equipment"], json!(["flat bench"]));
     assert!(by_name(&r, "Cable fly").is_none(), "absent equipment hides it");
 
-    let r = setup::exercise_search(&app, ME, a(json!({"gym": "ndsm", "include_unavailable": true}))).await.unwrap();
+    let r = setup::exercise_search(&app, ME, a(json!({"gym": "ndsm", "include_unavailable": true})))
+        .await
+        .unwrap();
     assert_eq!(by_name(&r, "Cable fly").unwrap()["availability"], "unavailable");
 
-    setup::gym_update(&app, ME, a(json!({"gym": "ndsm", "inventory_complete": true}))).await.unwrap();
-    let r = setup::exercise_search(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
-    assert!(by_name(&r, "Dumbbell bench press").is_none(), "complete inventory: unknown = absent");
+    setup::gym_update(&app, ME, a(json!({"gym": "ndsm", "inventory_complete": true})))
+        .await
+        .unwrap();
+    let r = setup::exercise_search(&app, ME, a(json!({"gym": "ndsm"})))
+        .await
+        .unwrap();
+    assert!(
+        by_name(&r, "Dumbbell bench press").is_none(),
+        "complete inventory: unknown = absent"
+    );
 
-    setup::gym_update(&app, ME, a(json!({"gym": "ndsm", "inventory_complete": false}))).await.unwrap();
-    setup::gym_equipment_forget(&app, ME, a(json!({"gym": "ndsm", "names": ["cable tower"]}))).await.unwrap();
-    let r = setup::exercise_search(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    setup::gym_update(&app, ME, a(json!({"gym": "ndsm", "inventory_complete": false})))
+        .await
+        .unwrap();
+    setup::gym_equipment_forget(&app, ME, a(json!({"gym": "ndsm", "names": ["cable tower"]})))
+        .await
+        .unwrap();
+    let r = setup::exercise_search(&app, ME, a(json!({"gym": "ndsm"})))
+        .await
+        .unwrap();
     assert_eq!(by_name(&r, "Cable fly").unwrap()["availability"], "unverified");
 }
 
@@ -189,7 +283,9 @@ async fn availability_distinguishes_unknown_from_absent(pool: PgPool) {
 async fn search_records_and_overview(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
-    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(1)}))).await.unwrap();
+    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(1)})))
+        .await
+        .unwrap();
     workout::set_add(
         &app,
         ME,
@@ -200,28 +296,53 @@ async fn search_records_and_overview(pool: PgPool) {
     .await
     .unwrap();
 
-    let heavy = search::set_search(&app, ME, a(json!({"exercise": "leg press", "order_by": "weight", "limit": 1}))).await.unwrap();
+    let heavy = search::set_search(
+        &app,
+        ME,
+        a(json!({"exercise": "leg press", "order_by": "weight", "limit": 1})),
+    )
+    .await
+    .unwrap();
     assert_eq!(heavy[0]["weight_kg"], 140.0);
-    let light = search::set_search(&app, ME, a(json!({"muscle_group": "quads", "max_weight_kg": 110}))).await.unwrap();
+    let light = search::set_search(&app, ME, a(json!({"muscle_group": "quads", "max_weight_kg": 110})))
+        .await
+        .unwrap();
     assert_eq!(light.as_array().unwrap().len(), 1);
 
-    let pr = search::personal_records(&app, ME, a(json!({"exercise": "leg press"}))).await.unwrap();
+    let pr = search::personal_records(&app, ME, a(json!({"exercise": "leg press"})))
+        .await
+        .unwrap();
     assert_eq!(pr[0]["heaviest_set"]["weight_kg"], 140.0);
     assert_eq!(pr[0]["best_e1rm"]["weight_kg"], 140.0); // 140*(1+8/30)=177.3 > 120*(1+10/30)=160
     assert_eq!(pr[0]["best_volume_workout"]["volume_kg"], 3520.0);
 
-    let hits = search::search(&app, ME, a(json!({"query": "seat position"}))).await.unwrap();
+    let hits = search::search(&app, ME, a(json!({"query": "seat position"})))
+        .await
+        .unwrap();
     assert_eq!(hits["notes"][0]["type"], "set");
     let hits = search::search(&app, ME, a(json!({"query": "legpress"}))).await.unwrap();
-    assert!(hits["names"].as_array().unwrap().iter().any(|h| h["name"] == "Leg press"));
+    assert!(
+        hits["names"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["name"] == "Leg press")
+    );
 
     let o = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
     assert_eq!(o["overview"]["days_since_muscle_group"]["quads"], 0);
     assert!(o["overview"]["days_since_muscle_group"]["chest"].is_null());
     assert_eq!(o["overview"]["done_today"][0]["sets"], 3);
 
-    let alt = search::exercise_alternatives(&app, ME, a(json!({"exercise": "push-up"}))).await.unwrap();
-    let names: Vec<_> = alt.as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap()).collect();
+    let alt = search::exercise_alternatives(&app, ME, a(json!({"exercise": "push-up"})))
+        .await
+        .unwrap();
+    let names: Vec<_> = alt
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
     assert_eq!(names, ["Dumbbell bench press"], "cable fly is absent at ndsm");
 }
 
@@ -235,6 +356,15 @@ async fn owners_are_isolated(pool: PgPool) {
     assert!(user_msg(setup::gym_get(&app, "bob", a(json!({"gym": gym_id}))).await).contains("no gym"));
     let w = workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
     let wid = w["workout"]["workout_id"].as_i64().unwrap();
-    assert!(user_msg(workout::set_add(&app, "bob", a(json!({"exercise": "x", "workout_id": wid, "sets": [{"reps": 1}]}))).await)
-        .contains("no workout"));
+    assert!(
+        user_msg(
+            workout::set_add(
+                &app,
+                "bob",
+                a(json!({"exercise": "x", "workout_id": wid, "sets": [{"reps": 1}]}))
+            )
+            .await
+        )
+        .contains("no workout")
+    );
 }

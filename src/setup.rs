@@ -3,14 +3,25 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 // Dynamic SQL only interpolates compile-time constants and enum-mapped literals; user input is always bound.
-use sqlx::AssertSqlSafe;
 use serde_json::Value;
+use sqlx::AssertSqlSafe;
 
 use crate::db::{self, App, AppResult, Tx, user_err};
 use crate::resolve::{self, Kind};
 
 pub const MUSCLE_GROUPS: &[&str] = &[
-    "chest", "back", "shoulders", "biceps", "triceps", "forearms", "core", "glutes", "quads", "hamstrings", "calves", "cardio",
+    "chest",
+    "back",
+    "shoulders",
+    "biceps",
+    "triceps",
+    "forearms",
+    "core",
+    "glutes",
+    "quads",
+    "hamstrings",
+    "calves",
+    "cardio",
 ];
 
 /// Per exercise at one gym: availability ∈ {available, unverified, unavailable} plus which
@@ -38,7 +49,10 @@ pub const AVAILABILITY_CTE: &str = "
 
 fn check_muscle_groups(groups: &[String]) -> AppResult<()> {
     match groups.iter().find(|g| !MUSCLE_GROUPS.contains(&g.as_str())) {
-        Some(bad) => Err(user_err(format!("unknown muscle group '{bad}'; use one of {}", MUSCLE_GROUPS.join(", ")))),
+        Some(bad) => Err(user_err(format!(
+            "unknown muscle group '{bad}'; use one of {}",
+            MUSCLE_GROUPS.join(", ")
+        ))),
         None => Ok(()),
     }
 }
@@ -47,9 +61,11 @@ fn check_muscle_groups(groups: &[String]) -> AppResult<()> {
 
 pub async fn settings_get(app: &App, owner: &str) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
-    let v: Value = sqlx::query_scalar("SELECT json_build_object('timezone', current_setting('TimeZone'), 'now', now(), 'today', current_date)")
-        .fetch_one(&mut *tx)
-        .await?;
+    let v: Value = sqlx::query_scalar(
+        "SELECT json_build_object('timezone', current_setting('TimeZone'), 'now', now(), 'today', current_date)",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(v)
 }
@@ -63,8 +79,15 @@ pub struct SettingsArgs {
 pub async fn settings_update(app: &App, owner: &str, a: SettingsArgs) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
     // Postgres validates the name against its own tz database (22023 → user error).
-    sqlx::query("SELECT set_config('TimeZone', $1, true)").bind(&a.timezone).execute(&mut *tx).await?;
-    sqlx::query("UPDATE user_settings SET timezone = $2 WHERE owner_sub = $1").bind(owner).bind(&a.timezone).execute(&mut *tx).await?;
+    sqlx::query("SELECT set_config('TimeZone', $1, true)")
+        .bind(&a.timezone)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE user_settings SET timezone = $2 WHERE owner_sub = $1")
+        .bind(owner)
+        .bind(&a.timezone)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     settings_get(app, owner).await
 }
@@ -220,16 +243,22 @@ pub enum Presence {
 async fn upsert_equipment(tx: &mut Tx, owner: &str, name: &str, category: Option<Category>) -> AppResult<i64> {
     if let Some(id) = resolve::existing_id(tx, owner, Kind::Equipment, name).await? {
         if let Some(c) = category {
-            sqlx::query("UPDATE equipment SET category = $2 WHERE id = $1").bind(id).bind(c.as_str()).execute(&mut **tx).await?;
+            sqlx::query("UPDATE equipment SET category = $2 WHERE id = $1")
+                .bind(id)
+                .bind(c.as_str())
+                .execute(&mut **tx)
+                .await?;
         }
         return Ok(id);
     }
-    Ok(sqlx::query_scalar("INSERT INTO equipment (owner_sub, name, category) VALUES ($1, btrim($2), $3) RETURNING id")
-        .bind(owner)
-        .bind(name)
-        .bind(category.unwrap_or(Category::Accessory).as_str())
-        .fetch_one(&mut **tx)
-        .await?)
+    Ok(
+        sqlx::query_scalar("INSERT INTO equipment (owner_sub, name, category) VALUES ($1, btrim($2), $3) RETURNING id")
+            .bind(owner)
+            .bind(name)
+            .bind(category.unwrap_or(Category::Accessory).as_str())
+            .fetch_one(&mut **tx)
+            .await?,
+    )
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -259,7 +288,11 @@ pub async fn gym_equipment_set(app: &App, owner: &str, a: GymEquipmentSetArgs) -
     let gym_id = resolve::id(&mut tx, owner, Kind::Gym, &a.gym).await?;
     for it in &a.items {
         let eq_id = upsert_equipment(&mut tx, owner, &it.name, it.category).await?;
-        let status = if it.status == Some(Presence::Absent) { "absent" } else { "present" };
+        let status = if it.status == Some(Presence::Absent) {
+            "absent"
+        } else {
+            "present"
+        };
         sqlx::query(
             "INSERT INTO gym_equipment (gym_id, equipment_id, status, quantity, available_weights_kg, max_load_kg, notes)
              VALUES ($1, $2, $3, $4, $5, $6, coalesce($7, ''))
@@ -298,7 +331,11 @@ pub async fn gym_equipment_forget(app: &App, owner: &str, a: GymEquipmentForgetA
     let gym_id = resolve::id(&mut tx, owner, Kind::Gym, &a.gym).await?;
     for n in &a.names {
         let eq_id = resolve::id(&mut tx, owner, Kind::Equipment, n).await?;
-        sqlx::query("DELETE FROM gym_equipment WHERE gym_id = $1 AND equipment_id = $2").bind(gym_id).bind(eq_id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM gym_equipment WHERE gym_id = $1 AND equipment_id = $2")
+            .bind(gym_id)
+            .bind(eq_id)
+            .execute(&mut *tx)
+            .await?;
     }
     let v = gym_json(&mut tx, owner, gym_id).await?;
     tx.commit().await?;
@@ -337,7 +374,10 @@ pub struct ExerciseCreateArgs {
 }
 
 async fn set_exercise_equipment(tx: &mut Tx, owner: &str, exercise_id: i64, names: &[String]) -> AppResult<()> {
-    sqlx::query("DELETE FROM exercise_equipment WHERE exercise_id = $1").bind(exercise_id).execute(&mut **tx).await?;
+    sqlx::query("DELETE FROM exercise_equipment WHERE exercise_id = $1")
+        .bind(exercise_id)
+        .execute(&mut **tx)
+        .await?;
     for n in names {
         let eq_id = upsert_equipment(tx, owner, n, None).await?;
         sqlx::query("INSERT INTO exercise_equipment VALUES ($1, $2) ON CONFLICT DO NOTHING")

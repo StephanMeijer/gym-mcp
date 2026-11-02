@@ -64,6 +64,9 @@ pub async fn begin(app: &App, owner: &str) -> AppResult<Tx> {
     .bind(&app.default_timezone)
     .fetch_one(&mut *tx)
     .await?;
-    sqlx::query("SELECT set_config('TimeZone', $1, true)").bind(&tz).execute(&mut *tx).await?;
+    sqlx::query("SELECT set_config('TimeZone', $1, true)")
+        .bind(&tz)
+        .execute(&mut *tx)
+        .await?;
     Ok(tx)
 }

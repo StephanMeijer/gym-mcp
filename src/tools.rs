@@ -73,87 +73,161 @@ type R = Result<CallToolResult, ErrorData>;
 impl GymServer {
     // ----- setup -----
     #[tool(description = "Show the user's timezone, now and today.")]
-    async fn settings_get(&self, p: P) -> R { call!(self, p, settings_get) }
+    async fn settings_get(&self, p: P) -> R {
+        call!(self, p, settings_get)
+    }
 
     #[tool(description = "Set the user's IANA timezone (\"Europe/Amsterdam\"); it defines today, weeks and months.")]
-    async fn settings_update(&self, p: P, a: Parameters<SettingsArgs>) -> R { call!(self, p, settings_update, a) }
+    async fn settings_update(&self, p: P, a: Parameters<SettingsArgs>) -> R {
+        call!(self, p, settings_update, a)
+    }
 
     #[tool(description = "Create a gym.")]
-    async fn gym_create(&self, p: P, a: Parameters<GymCreateArgs>) -> R { call!(self, p, gym_create, a) }
+    async fn gym_create(&self, p: P, a: Parameters<GymCreateArgs>) -> R {
+        call!(self, p, gym_create, a)
+    }
 
     #[tool(description = "Change a gym's name, aliases, notes or inventory_complete.")]
-    async fn gym_update(&self, p: P, a: Parameters<GymUpdateArgs>) -> R { call!(self, p, gym_update, a) }
+    async fn gym_update(&self, p: P, a: Parameters<GymUpdateArgs>) -> R {
+        call!(self, p, gym_update, a)
+    }
 
-    #[tool(description = "A gym with its equipment: present (with weights/loads) and confirmed absent. Unlisted = unknown.")]
-    async fn gym_get(&self, p: P, a: Parameters<GymRef>) -> R { call!(self, p, gym_get, a) }
+    #[tool(
+        description = "A gym with its equipment: present (with weights/loads) and confirmed absent. Unlisted = unknown."
+    )]
+    async fn gym_get(&self, p: P, a: Parameters<GymRef>) -> R {
+        call!(self, p, gym_get, a)
+    }
 
     #[tool(description = "All gyms with their last workout date.")]
-    async fn gym_list(&self, p: P) -> R { call!(self, p, gym_list) }
+    async fn gym_list(&self, p: P) -> R {
+        call!(self, p, gym_list)
+    }
 
-    #[tool(description = "Record what a gym has (or confirm it lacks): leg press, dumbbells 2-40kg, mats… Creates equipment kinds as needed; updates existing entries.")]
-    async fn gym_equipment_set(&self, p: P, a: Parameters<GymEquipmentSetArgs>) -> R { call!(self, p, gym_equipment_set, a) }
+    #[tool(
+        description = "Record what a gym has (or confirm it lacks): leg press, dumbbells 2-40kg, mats… Creates equipment kinds as needed; updates existing entries."
+    )]
+    async fn gym_equipment_set(&self, p: P, a: Parameters<GymEquipmentSetArgs>) -> R {
+        call!(self, p, gym_equipment_set, a)
+    }
 
     #[tool(description = "Set equipment at a gym back to unknown.")]
-    async fn gym_equipment_forget(&self, p: P, a: Parameters<GymEquipmentForgetArgs>) -> R { call!(self, p, gym_equipment_forget, a) }
+    async fn gym_equipment_forget(&self, p: P, a: Parameters<GymEquipmentForgetArgs>) -> R {
+        call!(self, p, gym_equipment_forget, a)
+    }
 
     #[tool(description = "All equipment kinds defined so far.")]
-    async fn equipment_list(&self, p: P) -> R { call!(self, p, equipment_list) }
+    async fn equipment_list(&self, p: P) -> R {
+        call!(self, p, equipment_list)
+    }
 
-    #[tool(description = "Create an exercise with its muscle groups and ALL the equipment it requires. Search first to avoid duplicates.")]
-    async fn exercise_create(&self, p: P, a: Parameters<ExerciseCreateArgs>) -> R { call!(self, p, exercise_create, a) }
+    #[tool(
+        description = "Create an exercise with its muscle groups and ALL the equipment it requires. Search first to avoid duplicates."
+    )]
+    async fn exercise_create(&self, p: P, a: Parameters<ExerciseCreateArgs>) -> R {
+        call!(self, p, exercise_create, a)
+    }
 
     #[tool(description = "Change an exercise's name, aliases, description, muscle groups or equipment.")]
-    async fn exercise_update(&self, p: P, a: Parameters<ExerciseUpdateArgs>) -> R { call!(self, p, exercise_update, a) }
+    async fn exercise_update(&self, p: P, a: Parameters<ExerciseUpdateArgs>) -> R {
+        call!(self, p, exercise_update, a)
+    }
 
-    #[tool(description = "Find exercises by name (typos ok) and/or muscle group; with a gym, shows whether each is available there.")]
-    async fn exercise_search(&self, p: P, a: Parameters<ExerciseSearchArgs>) -> R { call!(self, p, exercise_search, a) }
+    #[tool(
+        description = "Find exercises by name (typos ok) and/or muscle group; with a gym, shows whether each is available there."
+    )]
+    async fn exercise_search(&self, p: P, a: Parameters<ExerciseSearchArgs>) -> R {
+        call!(self, p, exercise_search, a)
+    }
 
     // ----- workout -----
     #[tool(description = "Start a workout at a gym, or resume the open one if it's the same gym.")]
-    async fn workout_start(&self, p: P, a: Parameters<StartArgs>) -> R { call!(self, p, start, a) }
+    async fn workout_start(&self, p: P, a: Parameters<StartArgs>) -> R {
+        call!(self, p, start, a)
+    }
 
-    #[tool(description = "Record a workout that already happened (created finished). Then set_add with its workout_id and performed_at.")]
-    async fn workout_add_past(&self, p: P, a: Parameters<AddPastArgs>) -> R { call!(self, p, add_past, a) }
+    #[tool(
+        description = "Record a workout that already happened (created finished). Then set_add with its workout_id and performed_at."
+    )]
+    async fn workout_add_past(&self, p: P, a: Parameters<AddPastArgs>) -> R {
+        call!(self, p, add_past, a)
+    }
 
     #[tool(description = "Finish the open workout.")]
-    async fn workout_finish(&self, p: P, a: Parameters<FinishArgs>) -> R { call!(self, p, finish, a) }
+    async fn workout_finish(&self, p: P, a: Parameters<FinishArgs>) -> R {
+        call!(self, p, finish, a)
+    }
 
     #[tool(description = "Correct a workout's start/finish time, gym or notes.")]
-    async fn workout_update(&self, p: P, a: Parameters<UpdateArgs>) -> R { call!(self, p, update, a) }
+    async fn workout_update(&self, p: P, a: Parameters<UpdateArgs>) -> R {
+        call!(self, p, update, a)
+    }
 
     #[tool(description = "The open workout with all its sets, grouped by exercise.")]
-    async fn workout_current(&self, p: P) -> R { call!(self, p, current) }
+    async fn workout_current(&self, p: P) -> R {
+        call!(self, p, current)
+    }
 
     #[tool(description = "Past workouts with their sets, filterable by gym, exercise and date.")]
-    async fn workout_list(&self, p: P, a: Parameters<WorkoutListArgs>) -> R { call!(self, p, workout_list, a) }
+    async fn workout_list(&self, p: P, a: Parameters<WorkoutListArgs>) -> R {
+        call!(self, p, workout_list, a)
+    }
 
     #[tool(description = "Log one or more sets of one exercise (one entry per set) to the open workout.")]
-    async fn set_add(&self, p: P, a: Parameters<SetAddArgs>) -> R { call!(self, p, set_add, a) }
+    async fn set_add(&self, p: P, a: Parameters<SetAddArgs>) -> R {
+        call!(self, p, set_add, a)
+    }
 
     #[tool(description = "Correct a logged set (weight, reps, time, exercise, notes).")]
-    async fn set_update(&self, p: P, a: Parameters<SetUpdateArgs>) -> R { call!(self, p, set_update, a) }
+    async fn set_update(&self, p: P, a: Parameters<SetUpdateArgs>) -> R {
+        call!(self, p, set_update, a)
+    }
 
     #[tool(description = "Delete a logged set.")]
-    async fn set_delete(&self, p: P, a: Parameters<SetDeleteArgs>) -> R { call!(self, p, set_delete, a) }
+    async fn set_delete(&self, p: P, a: Parameters<SetDeleteArgs>) -> R {
+        call!(self, p, set_delete, a)
+    }
 
     // ----- search & analysis -----
-    #[tool(description = "Everything needed to recommend what to do next at a gym: doable exercises with last done/top set, days since each muscle group, and today's work.")]
-    async fn training_overview(&self, p: P, a: Parameters<OverviewArgs>) -> R { call!(self, p, training_overview, a) }
+    #[tool(
+        description = "Everything needed to recommend what to do next at a gym: doable exercises with last done/top set, days since each muscle group, and today's work."
+    )]
+    async fn training_overview(&self, p: P, a: Parameters<OverviewArgs>) -> R {
+        call!(self, p, training_overview, a)
+    }
 
     #[tool(description = "Free-text search across gym/exercise/equipment names and all notes.")]
-    async fn search(&self, p: P, a: Parameters<SearchArgs>) -> R { call!(self, p, search, a) }
+    async fn search(&self, p: P, a: Parameters<SearchArgs>) -> R {
+        call!(self, p, search, a)
+    }
 
-    #[tool(description = "Find sets by exercise, muscle group, equipment, gym, date range, weight and reps; sort by date, weight, reps, volume or estimated 1RM.")]
-    async fn set_search(&self, p: P, a: Parameters<SetSearchArgs>) -> R { call!(self, p, set_search, a) }
+    #[tool(
+        description = "Find sets by exercise, muscle group, equipment, gym, date range, weight and reps; sort by date, weight, reps, volume or estimated 1RM."
+    )]
+    async fn set_search(&self, p: P, a: Parameters<SetSearchArgs>) -> R {
+        call!(self, p, set_search, a)
+    }
 
-    #[tool(description = "Time series per day/week/month of top weight, estimated 1RM, volume, sets or reps, for an exercise or a muscle group.")]
-    async fn progress(&self, p: P, a: Parameters<ProgressArgs>) -> R { call!(self, p, progress, a) }
+    #[tool(
+        description = "Time series per day/week/month of top weight, estimated 1RM, volume, sets or reps, for an exercise or a muscle group."
+    )]
+    async fn progress(&self, p: P, a: Parameters<ProgressArgs>) -> R {
+        call!(self, p, progress, a)
+    }
 
-    #[tool(description = "Personal records per exercise: heaviest set, best estimated 1RM, max reps at each weight, best volume workout.")]
-    async fn personal_records(&self, p: P, a: Parameters<RecordsArgs>) -> R { call!(self, p, personal_records, a) }
+    #[tool(
+        description = "Personal records per exercise: heaviest set, best estimated 1RM, max reps at each weight, best volume workout."
+    )]
+    async fn personal_records(&self, p: P, a: Parameters<RecordsArgs>) -> R {
+        call!(self, p, personal_records, a)
+    }
 
-    #[tool(description = "Exercises that train the same muscles and can be done at the gym (default: the current one).")]
-    async fn exercise_alternatives(&self, p: P, a: Parameters<AlternativesArgs>) -> R { call!(self, p, exercise_alternatives, a) }
+    #[tool(
+        description = "Exercises that train the same muscles and can be done at the gym (default: the current one)."
+    )]
+    async fn exercise_alternatives(&self, p: P, a: Parameters<AlternativesArgs>) -> R {
+        call!(self, p, exercise_alternatives, a)
+    }
 }
 
 #[tool_handler]

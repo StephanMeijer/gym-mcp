@@ -1,8 +1,8 @@
 //! Turns what a person says ("trianmore ndsm", "benchpres", "17") into a row id.
 
 // Dynamic SQL only interpolates compile-time constants and enum-mapped literals; user input is always bound.
-use sqlx::AssertSqlSafe;
 use serde_json::json;
+use sqlx::AssertSqlSafe;
 
 use crate::db::{AppResult, Tx, user_err};
 
@@ -123,7 +123,14 @@ pub fn resolve(query: &str, candidates: &[Candidate]) -> Outcome {
     if exact.len() == 1 {
         return Outcome::Hit(exact[0].1);
     }
-    let top5 = |min: f64| scored.iter().filter(|s| s.0 > min).take(5).map(|s| (s.1, s.2.clone())).collect();
+    let top5 = |min: f64| {
+        scored
+            .iter()
+            .filter(|s| s.0 > min)
+            .take(5)
+            .map(|s| (s.1, s.2.clone()))
+            .collect()
+    };
     match scored.as_slice() {
         [] => Outcome::NotFound(vec![]),
         [first, rest @ ..] if first.0 >= ACCEPT => match rest.first() {
@@ -136,8 +143,14 @@ pub fn resolve(query: &str, candidates: &[Candidate]) -> Outcome {
 
 pub async fn candidates(tx: &mut Tx, owner: &str, kind: Kind) -> AppResult<Vec<Candidate>> {
     let sql = format!("SELECT id, name, aliases FROM {} WHERE owner_sub = $1", kind.table());
-    let rows: Vec<(i64, String, Vec<String>)> = sqlx::query_as(AssertSqlSafe(sql)).bind(owner).fetch_all(&mut **tx).await?;
-    Ok(rows.into_iter().map(|(id, name, aliases)| Candidate { id, name, aliases }).collect())
+    let rows: Vec<(i64, String, Vec<String>)> = sqlx::query_as(AssertSqlSafe(sql))
+        .bind(owner)
+        .fetch_all(&mut **tx)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, aliases)| Candidate { id, name, aliases })
+        .collect())
 }
 
 fn create_hint(kind: Kind) -> &'static str {
@@ -158,12 +171,14 @@ fn require(kind: Kind, query: &str, outcome: Outcome) -> AppResult<i64> {
         Outcome::Hit(id) => Ok(id),
         Outcome::Ambiguous(c) => Err(user_err(
             json!({"error": format!("'{query}' matches several {}s; ask which one or pass its id", kind.table()),
-                   "candidates": as_json(&c)}).to_string(),
+                   "candidates": as_json(&c)})
+            .to_string(),
         )),
         Outcome::NotFound(c) => Err(user_err(
             json!({"error": format!("no {} matches '{query}'", kind.table()),
                    "closest": as_json(&c),
-                   "hint": format!("pick one of the closest, or create it with {}", create_hint(kind))}).to_string(),
+                   "hint": format!("pick one of the closest, or create it with {}", create_hint(kind))})
+            .to_string(),
         )),
     }
 }
