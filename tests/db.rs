@@ -1524,3 +1524,28 @@ async fn variant_defaults_per_gym_and_splits_history(pool: PgPool) {
         .unwrap();
     assert!(w["exercises"][0]["sets"][0]["variant"].is_null());
 }
+
+#[sqlx::test]
+async fn standard_variant_is_remembered_after_a_grip(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+
+    past_fly(&app, 3, 50.0, Some("Wide grip")).await;
+    past_fly(&app, 2, 40.0, Some("")).await;
+    // The last session here was standard, so the overview must not fall back to the wide-grip day.
+    let ov = search::training_overview(&app, ME, a(json!({"gym": "ndsm"})))
+        .await
+        .unwrap();
+    let fly = ov["overview"]["exercises"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "Cable fly")
+        .unwrap();
+    assert!(fly["variant_here"].is_null());
+    assert_eq!(fly["last_session"]["sets"][0]["weight_kg"], 40.0);
+
+    let inherited = past_fly(&app, 1, 45.0, None).await;
+    assert!(inherited["variant"].is_null());
+    assert_eq!(inherited["variant_source"], "last_used_here");
+}

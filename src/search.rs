@@ -83,16 +83,16 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
          -- the machine and the variant last used for each exercise at this gym
          here AS (SELECT exercise_id,
                          (array_agg(machine ORDER BY performed_at DESC) FILTER (WHERE machine IS NOT NULL))[1] AS machine,
-                         (array_agg(variant ORDER BY performed_at DESC) FILTER (WHERE variant IS NOT NULL))[1] AS variant
+                         (array_agg(variant ORDER BY performed_at DESC))[1] AS variant
                   FROM mine WHERE gym_id = $2 GROUP BY exercise_id),
          -- the last session on that machine and variant at any gym (same brand compares across gyms), else the last session
          picked AS (
             SELECT s.* FROM work s LEFT JOIN here h ON h.exercise_id = s.exercise_id
             WHERE (h.machine IS NULL OR lower(s.machine) = lower(h.machine))
-              AND (h.variant IS NULL OR lower(s.variant) = lower(h.variant))
+              AND (h.exercise_id IS NULL OR lower(s.variant) IS NOT DISTINCT FROM lower(h.variant))
               AND s.workout_id = (SELECT m.workout_id FROM work m
                                   WHERE m.exercise_id = s.exercise_id AND (h.machine IS NULL OR lower(m.machine) = lower(h.machine))
-                                    AND (h.variant IS NULL OR lower(m.variant) = lower(h.variant))
+                                    AND (h.exercise_id IS NULL OR lower(m.variant) IS NOT DISTINCT FROM lower(h.variant))
                                   ORDER BY m.performed_at DESC LIMIT 1)),
          last_session AS (
             SELECT s.exercise_id,

@@ -4,7 +4,6 @@ use chrono::{DateTime, Duration, Utc};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::AssertSqlSafe;
 
 use crate::db::{self, App, AppResult, Tx, user_err};
 use crate::resolve::{self, Kind};
@@ -476,13 +475,24 @@ pub struct SetAddArgs {
     pub load_basis: Option<LoadBasis>,
 }
 
-/// The machine or variant (`column`) for new sets and where it came from: given, last_used_here, or none.
+/// The newest machine set for this exercise at the workout's gym; NULL there means unknown, so it is skipped.
+const LAST_MACHINE: &str = "SELECT s.machine FROM workout_set s JOIN workout w ON w.id = s.workout_id
+     WHERE w.owner_sub = $1 AND s.exercise_id = $3 AND s.machine IS NOT NULL
+       AND w.gym_id = (SELECT gym_id FROM workout WHERE id = $2)
+     ORDER BY s.performed_at DESC LIMIT 1";
+/// The variant of the newest set for this exercise at the workout's gym; NULL there means standard, so it counts.
+const LAST_VARIANT: &str = "SELECT s.variant FROM workout_set s JOIN workout w ON w.id = s.workout_id
+     WHERE w.owner_sub = $1 AND s.exercise_id = $3
+       AND w.gym_id = (SELECT gym_id FROM workout WHERE id = $2)
+     ORDER BY s.performed_at DESC LIMIT 1";
+
+/// The machine or variant for new sets and where it came from: given, last_used_here (via `last`), or none.
 async fn last_here(
     tx: &mut Tx,
     owner: &str,
     workout_id: i64,
     exercise_id: i64,
-    column: &'static str,
+    last: &'static str,
     given: &Option<String>,
 ) -> AppResult<(Option<String>, &'static str)> {
     if let Some(m) = given {
@@ -493,20 +503,14 @@ async fn last_here(
             (Some(m.to_owned()), "given")
         });
     }
-    // column is a compile-time literal ("machine" or "variant"); values are bound.
-    let last: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
-        "SELECT s.{column} FROM workout_set s JOIN workout w ON w.id = s.workout_id
-         WHERE w.owner_sub = $1 AND s.exercise_id = $3 AND s.{column} IS NOT NULL
-           AND w.gym_id = (SELECT gym_id FROM workout WHERE id = $2)
-         ORDER BY s.performed_at DESC LIMIT 1"
-    )))
-    .bind(owner)
-    .bind(workout_id)
-    .bind(exercise_id)
-    .fetch_optional(&mut **tx)
-    .await?;
+    let last: Option<Option<String>> = sqlx::query_scalar(last)
+        .bind(owner)
+        .bind(workout_id)
+        .bind(exercise_id)
+        .fetch_optional(&mut **tx)
+        .await?;
     Ok(match last {
-        Some(m) => (Some(m), "last_used_here"),
+        Some(m) => (m, "last_used_here"),
         None => (None, "none"),
     })
 }
@@ -588,8 +592,8 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
     let exercise_id = resolve::id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let now = now(&mut tx).await?;
     let original_start = t.started_at;
-    let (machine, machine_source) = last_here(&mut tx, owner, t.id, exercise_id, "machine", &a.machine).await?;
-    let (variant, variant_source) = last_here(&mut tx, owner, t.id, exercise_id, "variant", &a.variant).await?;
+    let (machine, machine_source) = last_here(&mut tx, owner, t.id, exercise_id, LAST_MACHINE, &a.machine).await?;
+    let (variant, variant_source) = last_here(&mut tx, owner, t.id, exercise_id, LAST_VARIANT, &a.variant).await?;
 
     for (i, s) in a.sets.iter().enumerate() {
         let at = match &s.performed_at {
