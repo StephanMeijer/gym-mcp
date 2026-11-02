@@ -1,0 +1,24 @@
+# Local development: auth disabled via DEV_SUB. Not for deployment.
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: gym
+      POSTGRES_PASSWORD: gym
+      POSTGRES_DB: gym
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "gym"]
+      interval: 2s
+    ports: ["127.0.0.1:5432:5432"]
+  app:
+    build: .
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://gym:gym@db:5432/gym
+      PUBLIC_URL: http://localhost:8080
+      DEV_SUB: dev
+    ports: ["127.0.0.1:8080:8080"]
+volumes:
+  pgdata:
