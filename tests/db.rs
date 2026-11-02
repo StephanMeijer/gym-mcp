@@ -910,3 +910,92 @@ async fn muscle_group_volume_in_overview(pool: PgPool) {
     assert!(g["calves"]["avg_rpe_28d"].is_null());
     assert_eq!(g.as_object().unwrap().len(), setup::MUSCLE_GROUPS.len());
 }
+
+#[sqlx::test]
+async fn muscle_group_volume_over_any_period(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    setup::exercise_create(
+        &app,
+        ME,
+        a(json!({"name": "Barbell bench press", "muscle_groups": ["chest"],
+                 "secondary_muscle_groups": ["triceps", "front_delts"]})),
+    )
+    .await
+    .unwrap();
+    let start = Utc::now() - chrono::Duration::days(10);
+    let past = workout::add_past(
+        &app,
+        ME,
+        a(json!({"gym": "ndsm", "started_at": start.to_rfc3339(),
+                 "finished_at": (start + chrono::Duration::hours(1)).to_rfc3339()})),
+    )
+    .await
+    .unwrap();
+    workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "barbell bench", "workout_id": past["workout_id"],
+                 "sets": [{"reps": 8, "weight_kg": 60, "rpe": 7,
+                           "performed_at": (start + chrono::Duration::minutes(5)).to_rfc3339()}]})),
+    )
+    .await
+    .unwrap();
+    workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "barbell bench", "sets": [{"reps": 8, "weight_kg": 60, "rpe": 8}, {"reps": 8, "weight_kg": 60}]})),
+    )
+    .await
+    .unwrap();
+
+    let vol = |args: Value| search::muscle_group_volume(&app, ME, a(args));
+    let d14 = vol(json!({"days": 14})).await.unwrap();
+    let chest = &d14["muscle_groups"]["chest"];
+    assert_eq!(d14["days"], 14.0);
+    assert_eq!(chest["sets"], 3.0);
+    assert_eq!(chest["sets_per_week"], 1.5);
+    assert_eq!(
+        chest["from_exercises"],
+        json!([{"exercise": "Barbell bench press", "sets": 3.0}])
+    );
+    assert_eq!(d14["muscle_groups"]["triceps"]["sets"], 1.5);
+    assert_eq!(d14["muscle_groups"]["calves"]["from_exercises"], json!([]));
+
+    let ranged =
+        vol(json!({"from": (Utc::now() - chrono::Duration::days(14)).to_rfc3339(), "to": Utc::now().to_rfc3339()}))
+            .await
+            .unwrap();
+    assert_eq!(ranged["muscle_groups"]["chest"]["sets"], 3.0);
+
+    // A period that ends before today's sets: only the old set, but days_since is all-time.
+    let old = vol(json!({"from": (Utc::now() - chrono::Duration::days(14)).to_rfc3339(),
+                         "to": (Utc::now() - chrono::Duration::days(5)).to_rfc3339()}))
+    .await
+    .unwrap();
+    assert_eq!(old["muscle_groups"]["chest"]["sets"], 1.0);
+    assert_eq!(old["muscle_groups"]["chest"]["avg_rpe"], 7.0);
+    assert_eq!(old["muscle_groups"]["chest"]["days_since"], 0);
+
+    // The overview uses the same numbers.
+    let ov = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
+    let og = &ov["overview"]["muscle_groups"]["chest"];
+    let d7 = vol(json!({})).await.unwrap();
+    let d28 = vol(json!({"days": 28})).await.unwrap();
+    assert_eq!(og["sets_7d"], d7["muscle_groups"]["chest"]["sets"]);
+    assert_eq!(og["sets_28d"], d28["muscle_groups"]["chest"]["sets"]);
+    assert_eq!(og["train_days_28d"], d28["muscle_groups"]["chest"]["train_days"]);
+    assert_eq!(og["avg_rpe_28d"], d28["muscle_groups"]["chest"]["avg_rpe"]);
+    assert_eq!(d7["muscle_groups"]["chest"]["sets"], 2.0);
+
+    for (args, msg) in [
+        (json!({"days": 7, "from": "2026-10-01"}), "not both"),
+        (json!({"to": "2026-10-01"}), "needs from"),
+        (json!({"days": 0}), "between 1 and 365"),
+        (json!({"from": "2026-10-02", "to": "2026-10-01"}), "before"),
+    ] {
+        let m = user_msg(vol(args).await);
+        assert!(m.contains(msg), "{m}");
+    }
+}

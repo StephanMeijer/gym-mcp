@@ -33,6 +33,7 @@ Muscle balance: training_overview.muscle_groups has per muscle days_since (prima
 (weighted: primary 1, secondary 0.5; strength only), train_days_28d and avg_rpe_28d. Rule of thumb for hypertrophy: \
 ~10-20 sets per muscle per week, trained 2+ times a week; for strength, fewer and heavier sets. Point out muscles well \
 below that or not trained in 14+ days; the judgement is yours.
+For a specific period (\"last 10 days\", \"October\") use muscle_group_volume; for trends over time, progress.
 Effort: when the user says how a set felt, record rpe (1-10; \"2 left in the tank\" = RPE 8, \"to failure\" = 10) and rest_s \
 if mentioned. Ask for their goal once (settings_update goal). Recommend progression from goal + last_session in \
 training_overview: e.g. all sets at RPE <= 7 → add weight or reps. If a logged weight doesn't fit the gym's equipment text, mention it.
@@ -317,6 +318,18 @@ impl GymServer {
     }
 
     #[tool(
+        description = "Per muscle group over a period (default the last 7 days, or days / from-to): weighted sets (primary 1, secondary 0.5), sets per week, training days, average RPE, days since, and the exercises behind it.",
+        annotations(
+            title = "Muscle volume over a period",
+            read_only_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn muscle_group_volume(&self, p: P, a: Parameters<MuscleVolumeArgs>) -> R {
+        call!(self, p, muscle_group_volume, a)
+    }
+
+    #[tool(
         description = "Free-text search across gym and exercise names, equipment texts, descriptions and notes.",
         annotations(title = "Search", read_only_hint = true, open_world_hint = false)
     )]
@@ -373,7 +386,7 @@ mod tests {
     #[test]
     fn every_tool_is_annotated_and_closed_world() {
         let tools = GymServer::tool_router().list_all();
-        assert_eq!(tools.len(), 24);
+        assert_eq!(tools.len(), 25);
         for t in &tools {
             let a = t
                 .annotations
