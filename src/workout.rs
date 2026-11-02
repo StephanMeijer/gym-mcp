@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::db::{self, App, AppResult, Tx, user_err};
+use crate::db::{self, App, AppError, AppResult, Tx, user_err};
 use crate::resolve::{self, Kind};
 
 const MAX_FUTURE: Duration = Duration::minutes(5);
@@ -645,7 +645,9 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
 
 #[derive(Deserialize, JsonSchema)]
 pub struct SetUpdateArgs {
-    pub set_id: i64,
+    pub set_id: Option<i64>,
+    /// Instead of set_id: apply the same change to several sets at once (all or nothing).
+    pub set_ids: Option<Vec<i64>>,
     /// Move the set to another exercise (name, alias, or id).
     pub exercise: Option<String>,
     pub reps: Option<i32>,
@@ -678,16 +680,85 @@ async fn set_workout(tx: &mut Tx, owner: &str, set_id: i64) -> AppResult<i64> {
         .ok_or_else(|| user_err(format!("no set with id {set_id}")))
 }
 
+/// The sets a correction applies to: set_id or set_ids (1-100, duplicates dropped).
+fn set_ids(set_id: Option<i64>, set_ids: &Option<Vec<i64>>) -> AppResult<Vec<i64>> {
+    let mut ids = match (set_id, set_ids) {
+        (Some(id), None) => vec![id],
+        (None, Some(ids)) => ids.clone(),
+        _ => return Err(user_err("pass set_id or set_ids, not both")),
+    };
+    let mut seen = std::collections::HashSet::new();
+    ids.retain(|id| seen.insert(*id));
+    if ids.is_empty() || ids.len() > 100 {
+        return Err(user_err("pass between 1 and 100 set_ids"));
+    }
+    Ok(ids)
+}
+
+/// Names the set in a batch error, so the caller knows which entry rejected the whole batch.
+fn for_set(id: i64) -> impl Fn(AppError) -> AppError {
+    move |e| match e {
+        AppError::User(m) => user_err(format!("set {id}: {m}")),
+        e => e,
+    }
+}
+
+/// The result of a correction: the workout as before, or each workout when the sets span several.
+async fn touched_json(tx: &mut Tx, owner: &str, workouts: &[i64]) -> AppResult<Value> {
+    let mut out = Vec::new();
+    for &w in workouts {
+        out.push(workout_json(tx, owner, w).await?);
+    }
+    Ok(match out.len() {
+        1 => out.remove(0),
+        _ => json!({"workouts": out}),
+    })
+}
+
 pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<Value> {
+    let ids = set_ids(a.set_id, &a.set_ids)?;
     let mut tx = db::begin(app, owner).await?;
-    let workout_id = set_workout(&mut tx, owner, a.set_id).await?;
+    let exercise_id = match &a.exercise {
+        Some(e) => Some(resolve::id(&mut tx, owner, Kind::Exercise, e).await?),
+        None => None,
+    };
+    let at = match &a.performed_at {
+        Some(p) => Some(parse_time(&mut tx, p).await?),
+        None => None,
+    };
+    let now = now(&mut tx).await?;
+    // One transaction: an error on any set returns early and rolls back the whole batch.
+    let mut workouts = Vec::new();
+    for id in ids {
+        let w = update_one(&mut tx, owner, id, &a, exercise_id, at, now)
+            .await
+            .map_err(for_set(id))?;
+        if !workouts.contains(&w) {
+            workouts.push(w);
+        }
+    }
+    let w = touched_json(&mut tx, owner, &workouts).await?;
+    tx.commit().await?;
+    Ok(w)
+}
+
+async fn update_one(
+    tx: &mut Tx,
+    owner: &str,
+    set_id: i64,
+    a: &SetUpdateArgs,
+    exercise_id: Option<i64>,
+    at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> AppResult<i64> {
+    let workout_id = set_workout(tx, owner, set_id).await?;
     if LoadBasis::is_set(a.load_basis) {
         let unilateral = match a.unilateral {
             Some(u) => u,
             None => {
                 sqlx::query_scalar("SELECT unilateral FROM workout_set WHERE id = $1")
-                    .bind(a.set_id)
-                    .fetch_one(&mut *tx)
+                    .bind(set_id)
+                    .fetch_one(&mut **tx)
                     .await?
             }
         };
@@ -695,20 +766,10 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
             return Err(user_err(LOAD_BASIS_NEEDS_UNILATERAL));
         }
     }
-    let exercise_id = match &a.exercise {
-        Some(e) => Some(resolve::id(&mut tx, owner, Kind::Exercise, e).await?),
-        None => None,
-    };
-    let at = match &a.performed_at {
-        Some(p) => {
-            let at = parse_time(&mut tx, p).await?;
-            let now = now(&mut tx).await?;
-            let mut t = target(&mut tx, owner, workout_id).await?;
-            fit_in_window(&mut tx, &mut t, at, now).await?;
-            Some(at)
-        }
-        None => None,
-    };
+    if let Some(at) = at {
+        let mut t = target(tx, owner, workout_id).await?;
+        fit_in_window(tx, &mut t, at, now).await?;
+    }
     sqlx::query(
         "UPDATE workout_set SET
             exercise_id = coalesce($2, exercise_id), reps = coalesce($3, reps), weight_kg = coalesce($4, weight_kg),
@@ -721,7 +782,7 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
             variant = CASE WHEN $16::text IS NULL THEN variant ELSE NULLIF(btrim($16), '') END, updated_at = now()
          WHERE id = $1",
     )
-    .bind(a.set_id)
+    .bind(set_id)
     .bind(exercise_id)
     .bind(a.reps)
     .bind(a.weight_kg)
@@ -737,26 +798,33 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
     .bind(a.unilateral)
     .bind(a.load_basis.map(LoadBasis::as_str))
     .bind(&a.variant)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
-    let w = workout_json(&mut tx, owner, workout_id).await?;
-    tx.commit().await?;
-    Ok(w)
+    Ok(workout_id)
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct SetDeleteArgs {
-    pub set_id: i64,
+    pub set_id: Option<i64>,
+    /// Instead of set_id: delete several sets at once (all or nothing).
+    pub set_ids: Option<Vec<i64>>,
 }
 
 pub async fn set_delete(app: &App, owner: &str, a: SetDeleteArgs) -> AppResult<Value> {
+    let ids = set_ids(a.set_id, &a.set_ids)?;
     let mut tx = db::begin(app, owner).await?;
-    let workout_id = set_workout(&mut tx, owner, a.set_id).await?;
-    sqlx::query("DELETE FROM workout_set WHERE id = $1")
-        .bind(a.set_id)
-        .execute(&mut *tx)
-        .await?;
-    let w = workout_json(&mut tx, owner, workout_id).await?;
+    let mut workouts = Vec::new();
+    for id in ids {
+        let w = set_workout(&mut tx, owner, id).await.map_err(for_set(id))?;
+        sqlx::query("DELETE FROM workout_set WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        if !workouts.contains(&w) {
+            workouts.push(w);
+        }
+    }
+    let w = touched_json(&mut tx, owner, &workouts).await?;
     tx.commit().await?;
     Ok(w)
 }

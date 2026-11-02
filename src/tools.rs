@@ -20,7 +20,7 @@ Gym logbook. Typical flow:
    exercise_search to find it; only if it truly does not exist, exercise_create with its muscle groups and the equipment it needs (free text). \
    Then set_add with one entry per set. Never invent ids; names and aliases are accepted everywhere.
 3. Anything not done just now (\"forgot: 3x10 squats at 19:40\") → pass performed_at. A whole past session → workout_add_past, \
-   then set_add with its workout_id. Corrections → set_update / set_delete.
+   then set_add with its workout_id. Corrections → set_update / set_delete (set_ids for the same fix on several sets at once).
 4. \"What next?\" → training_overview (and exercise_alternatives if something is busy). Recommend from that data. \
    Judge what's possible by comparing each exercise's equipment text with the gym's equipment text; if the gym's text \
    doesn't say, ask the user, then add what you learn to the gym with gym_update equipment_append.
@@ -301,7 +301,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Correct a logged set (weight, reps, time, exercise, notes).",
+        description = "Correct one or more logged sets (weight, reps, time, exercise, notes). Pass set_ids to apply the same change to several sets at once; all or nothing.",
         annotations(
             title = "Correct set",
             read_only_hint = false,
@@ -315,7 +315,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Delete a logged set.",
+        description = "Delete one or more logged sets (set_ids for several at once; all or nothing).",
         annotations(
             title = "Delete set",
             read_only_hint = false,
