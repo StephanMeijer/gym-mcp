@@ -97,6 +97,19 @@ This needs Authelia ≥ 4.39 for JWT access tokens. Check the redirect URIs agai
 
 Then, in Claude: **Settings → Connectors → Add custom connector**, with URL `https://gym.example.com/mcp` and the client ID/secret under advanced settings.
 
+## Releases
+
+Commits on `main` follow [Conventional Commits](https://www.conventionalcommits.org/). On every push to `main`, CI tests, lints, and builds the image for amd64 and arm64. If that passes, [release-plz](https://release-plz.dev):
+1. opens or updates a release PR with the version bump and `CHANGELOG.md`;
+2. when that PR is merged, tags `vX.Y.Z` and creates the GitHub release;
+3. then dispatches `release.yml`, which pushes the multi-arch image with build provenance.
+
+Versions come from git tags (`git_only`); the crate is not published to crates.io.
+
+```sh
+docker pull ghcr.io/stephanmeijer/gym-mcp:latest   # or :X.Y.Z / :X.Y
+```
+
 ## License
 
 [MPL-2.0](LICENSE)

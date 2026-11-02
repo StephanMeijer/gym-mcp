@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: gym
+          POSTGRES_PASSWORD: gym
+          POSTGRES_DB: gym
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gym" --health-interval 2s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgres://gym:gym@localhost:5432/gym
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  # Build (don't push) both arches so a broken Dockerfile can't get tagged.
+  docker-build:
+    uses: ./.github/workflows/docker.yml
+    with:
+      push: false
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+  # Tags vX.Y.Z + creates the GitHub release when Cargo.toml's version has no tag yet
+  # (i.e. right after a release PR merges). No `concurrency:` here: a cancelled
+  # release run would leave the version untagged until the next push.
+  release-plz-release:
+    name: Tag and release
+    needs: [test, clippy, fmt, docker-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'StephanMeijer/gym-mcp'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: write # dispatch release.yml
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run release-plz (release)
+        id: release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+          config: release-plz.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Dispatch release.yml for the new tag
+        if: steps.release-plz.outputs.releases_created == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+        run: |
+          set -euo pipefail
+          tag=$(printf '%s' "$RELEASES" | jq -r '..|.tag? // empty | select(test("^v[0-9]"))' | head -n1)
+          if [ -n "$tag" ]; then
+            echo "Dispatching release.yml against $tag"
+            gh workflow run release.yml --ref "$tag" --repo "$GITHUB_REPOSITORY"
+          else
+            echo "No vX.Y.Z tag in release-plz output"
+          fi
+
+  # Opens/updates the release PR (version bump + CHANGELOG from conventional commits).
+  release-plz-pr:
+    name: Release PR
+    needs: [release-plz-release]
+    if: >-
+      !cancelled()
+      && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'StephanMeijer/gym-mcp'
+      && contains(fromJSON('["success", "failure"]'), needs.release-plz-release.result)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-pr
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run release-plz (release-pr)
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+          config: release-plz.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

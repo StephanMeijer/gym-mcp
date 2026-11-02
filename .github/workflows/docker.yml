@@ -1,0 +1,156 @@
+# Reusable image build. push=false: validate that the Dockerfile builds (CI).
+# push=true: build each arch natively, push by digest, merge into one multi-arch
+# manifest tagged X.Y.Z / X.Y / X / latest, and attest build provenance.
+name: Docker
+
+on:
+  workflow_call:
+    inputs:
+      push:
+        type: boolean
+        default: false
+      ref:
+        description: Git ref to check out. Empty = the triggering SHA.
+        type: string
+        default: ""
+      tag_name:
+        description: Release tag (vX.Y.Z), required when push=true.
+        type: string
+        default: ""
+
+env:
+  IMAGE: ghcr.io/stephanmeijer/gym-mcp
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, platform: linux/amd64, runner: ubuntu-latest }
+          - { arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - name: Refuse a release build without a version tag
+        if: inputs.push
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          case "${TAG_NAME}" in
+            v[0-9]*) ;;
+            *) echo "::error::tag_name='${TAG_NAME}' is not a vX.Y.Z tag" >&2; exit 1 ;;
+          esac
+      - uses: docker/login-action@v4
+        if: inputs.push
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build ${{ matrix.platform }}
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          outputs: >-
+            ${{ inputs.push
+              && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE)
+              || format('type=docker,name={0}:validation', env.IMAGE) }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+      - name: Record digest
+        if: inputs.push
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [ -n "${DIGEST}" ] || { echo "::error::build produced no digest" >&2; exit 1; }
+          mkdir -p /tmp/digests && touch "/tmp/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v7
+        if: inputs.push
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Multi-arch manifest
+    if: inputs.push
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tags and annotations
+        id: meta
+        uses: docker/metadata-action@v6
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.tag_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag_name }}
+            type=semver,pattern={{major}},value=${{ inputs.tag_name }},enable=${{ !startsWith(inputs.tag_name, 'v0.') }}
+            type=raw,value=latest,enable=${{ !contains(inputs.tag_name, '-') }}
+          labels: |
+            org.opencontainers.image.title=gym-mcp
+            org.opencontainers.image.description=MCP server that turns Claude/ChatGPT into a gym logbook
+            org.opencontainers.image.source=https://github.com/StephanMeijer/gym-mcp
+            org.opencontainers.image.licenses=MPL-2.0
+      - name: Create manifest list
+        working-directory: /tmp/digests
+        env:
+          TAGS_JSON: ${{ steps.meta.outputs.json }}
+          ANNOTATIONS: ${{ steps.meta.outputs.annotations }}
+        run: |
+          set -euo pipefail
+          mapfile -t tags < <(jq -er '.tags[]' <<<"$TAGS_JSON")
+          mapfile -t annotations < <(printf '%s\n' "$ANNOTATIONS" | sed '/^$/d')
+          sources=()
+          for d in *; do sources+=("${IMAGE}@sha256:${d}"); done
+          docker buildx imagetools create \
+            "${tags[@]/#/--tag=}" \
+            "${annotations[@]/#/--annotation=}" \
+            "${sources[@]}"
+      - name: Resolve index digest
+        id: index
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -er '.digest')
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools inspect "${IMAGE}@${digest}"
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true

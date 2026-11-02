@@ -1,0 +1,13 @@
+# One crate, versioned from git tags (not crates.io): release-plz opens a release PR
+# with the version bump + CHANGELOG, and on merge tags `vX.Y.Z` and creates the GitHub
+# release. ci.yml then dispatches release.yml, which builds and pushes the Docker image.
+#
+# shortcut: not published to crates.io. To publish, drop `git_only`, publish once by
+# hand (Trusted Publishing cannot create a crate), then configure Trusted Publishing.
+
+[workspace]
+git_only = true
+git_tag_name = "v{{ version }}"
+# Don't run `cargo update` in the release PR (no unrelated lockfile churn).
+dependencies_update = false
+semver_check = false
