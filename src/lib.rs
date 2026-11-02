@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod db;
+pub mod measurement;
 pub mod resolve;
 pub mod search;
 pub mod setup;

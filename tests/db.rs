@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use gym_mcp::db::{App, AppError};
-use gym_mcp::{search, setup, workout};
+use gym_mcp::{measurement, search, setup, workout};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -1047,4 +1047,76 @@ async fn settings_profile_round_trip(pool: PgPool) {
 
     let bad = user_msg(setup::settings_update(&app, ME, a(json!({"priority_muscle_groups": ["pecs"]}))).await);
     assert!(bad.contains("unknown muscle group"), "{bad}");
+}
+
+#[sqlx::test]
+async fn measurements_round_trip(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    let bw = |app: &App| {
+        let app = app.clone();
+        async move {
+            search::training_overview(&app, ME, a(json!({"gym": "ndsm"})))
+                .await
+                .unwrap()["overview"]["body_weight"]
+                .clone()
+        }
+    };
+    assert!(bw(&app).await.is_null());
+
+    let old = measurement::measurement_add(&app, ME, a(json!({"value": 85.0, "measured_at": hours_ago(30 * 24)})))
+        .await
+        .unwrap();
+    assert_eq!(old["kind"], "body_weight");
+    assert_eq!(old["unit"], "kg");
+    let new = measurement::measurement_add(&app, ME, a(json!({"value": 180, "unit": "lb", "notes": "morning"})))
+        .await
+        .unwrap();
+    assert!((new["value"].as_f64().unwrap() - 81.6466).abs() < 0.001, "{new}");
+    assert_eq!(new["unit"], "kg");
+
+    let list = measurement::measurement_list(&app, ME, a(json!({}))).await.unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    assert_eq!(list[0]["id"], new["id"], "newest first");
+    let recent = measurement::measurement_list(&app, ME, a(json!({"from": hours_ago(24)})))
+        .await
+        .unwrap();
+    assert_eq!(recent.as_array().unwrap().len(), 1);
+
+    let ov = bw(&app).await;
+    assert!((ov["latest_kg"].as_f64().unwrap() - 81.6466).abs() < 0.001, "{ov}");
+    assert!((ov["change_4w_kg"].as_f64().unwrap() + 3.35).abs() < 0.001, "{ov}");
+
+    let up = measurement::measurement_update(
+        &app,
+        ME,
+        a(json!({"id": new["id"], "value": 82.0, "notes": "after breakfast"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(up["value"], 82.0);
+    assert_eq!(up["notes"], "after breakfast");
+
+    // owner isolation
+    let id = new["id"].clone();
+    assert_eq!(
+        measurement::measurement_list(&app, "bob", a(json!({}))).await.unwrap(),
+        json!([])
+    );
+    let msg = user_msg(measurement::measurement_update(&app, "bob", a(json!({"id": id, "value": 1.0}))).await);
+    assert!(msg.contains("no measurement"), "{msg}");
+    let msg = user_msg(measurement::measurement_delete(&app, "bob", a(json!({"id": id}))).await);
+    assert!(msg.contains("no measurement"), "{msg}");
+
+    measurement::measurement_delete(&app, ME, a(json!({"id": id})))
+        .await
+        .unwrap();
+    let list = measurement::measurement_list(&app, ME, a(json!({}))).await.unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert!(bw(&app).await["change_4w_kg"].is_null(), "one measurement: no change");
+
+    let future = (Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+    user_msg(measurement::measurement_add(&app, ME, a(json!({"value": 80.0, "measured_at": future}))).await);
+    let msg = user_msg(measurement::measurement_add(&app, ME, a(json!({"value": 0.0}))).await);
+    assert!(msg.contains("invalid value"), "{msg}");
 }
