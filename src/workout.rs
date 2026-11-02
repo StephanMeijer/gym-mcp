@@ -128,6 +128,7 @@ pub async fn workout_json(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResul
                                    'set_id', s.id, 'set_number', s.n, 'performed_at', s.performed_at,
                                    'reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
                                    'rpe', s.rpe, 'rest_s', s.rest_s,
+                                   'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
                                    'notes', NULLIF(s.notes, '')) ORDER BY s.performed_at, s.id)) AS obj
                     FROM (SELECT ws.*, row_number() OVER (PARTITION BY ws.exercise_id ORDER BY ws.performed_at, ws.id) AS n
                           FROM workout_set ws WHERE ws.workout_id = w.id) s
@@ -380,6 +381,10 @@ pub struct SetInput {
     /// The number on the implement: per dumbbell/kettlebell; barbell = total incl. bar; machine = stack setting.
     pub weight_kg: Option<f64>,
     pub duration_s: Option<i32>,
+    /// Cardio: distance in metres ("7.5 km" = 7500).
+    pub distance_m: Option<f64>,
+    /// Cardio: machine setting as free text, e.g. "level 12, incline 6%".
+    pub intensity: Option<String>,
     /// Effort 1-10 in half steps. Reps in reserve map as RPE = 10 - RIR ("2 left in the tank" = 8).
     pub rpe: Option<f64>,
     /// Rest before this set, in seconds.
@@ -444,8 +449,11 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
     if a.sets.is_empty() || a.sets.len() > 50 {
         return Err(user_err("pass between 1 and 50 sets"));
     }
-    if a.sets.iter().any(|s| s.reps.is_none() && s.duration_s.is_none()) {
-        return Err(user_err("each set needs reps or duration_s"));
+    if a.sets
+        .iter()
+        .any(|s| s.reps.is_none() && s.duration_s.is_none() && s.distance_m.is_none())
+    {
+        return Err(user_err("each set needs reps, duration_s or distance_m"));
     }
     let mut tx = db::begin(app, owner).await?;
     let mut closed = None;
@@ -482,8 +490,9 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         };
         fit_in_window(&mut tx, &mut t, at, now).await?;
         sqlx::query(
-            "INSERT INTO workout_set (workout_id, exercise_id, performed_at, reps, weight_kg, duration_s, rpe, rest_s, notes)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, coalesce($9, ''))",
+            "INSERT INTO workout_set (workout_id, exercise_id, performed_at, reps, weight_kg, duration_s, rpe, rest_s, notes,
+                                      distance_m, intensity)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, coalesce($9, ''), $10, coalesce($11, ''))",
         )
         .bind(t.id)
         .bind(exercise_id)
@@ -494,6 +503,8 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         .bind(s.rpe)
         .bind(s.rest_s)
         .bind(&s.notes)
+        .bind(s.distance_m)
+        .bind(&s.intensity)
         .execute(&mut *tx)
         .await?;
     }
@@ -515,6 +526,8 @@ pub struct SetUpdateArgs {
     pub reps: Option<i32>,
     pub weight_kg: Option<f64>,
     pub duration_s: Option<i32>,
+    pub distance_m: Option<f64>,
+    pub intensity: Option<String>,
     /// 1-10 in half steps.
     pub rpe: Option<f64>,
     pub rest_s: Option<i32>,
@@ -552,7 +565,8 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
         "UPDATE workout_set SET
             exercise_id = coalesce($2, exercise_id), reps = coalesce($3, reps), weight_kg = coalesce($4, weight_kg),
             duration_s = coalesce($5, duration_s), performed_at = coalesce($6, performed_at),
-            notes = coalesce($7, notes), rpe = coalesce($8, rpe), rest_s = coalesce($9, rest_s), updated_at = now()
+            notes = coalesce($7, notes), rpe = coalesce($8, rpe), rest_s = coalesce($9, rest_s),
+            distance_m = coalesce($10, distance_m), intensity = coalesce($11, intensity), updated_at = now()
          WHERE id = $1",
     )
     .bind(a.set_id)
@@ -564,6 +578,8 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
     .bind(&a.notes)
     .bind(a.rpe)
     .bind(a.rest_s)
+    .bind(a.distance_m)
+    .bind(&a.intensity)
     .execute(&mut *tx)
     .await?;
     let w = workout_json(&mut tx, owner, workout_id).await?;

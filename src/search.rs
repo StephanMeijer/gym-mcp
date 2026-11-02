@@ -15,6 +15,7 @@ use crate::workout;
 
 const E1RM: &str = "(s.weight_kg * (1 + s.reps / 30.0))"; // Epley
 const VOLUME: &str = "(s.weight_kg * s.reps)";
+const PACE: &str = "(s.duration_s * 1000.0 / NULLIF(s.distance_m, 0))"; // seconds per km
 
 fn limit(l: Option<i64>) -> i64 {
     l.unwrap_or(50).clamp(1, 500)
@@ -65,7 +66,8 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                    json_build_object(
                        'date', min(s.performed_at)::date,
                        'sets', json_agg(json_build_object('reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
-                                                          'rpe', s.rpe, 'rest_s', s.rest_s) ORDER BY s.performed_at)) AS last
+                                                          'rpe', s.rpe, 'rest_s', s.rest_s, 'distance_m', s.distance_m,
+                                                          'intensity', NULLIF(s.intensity, '')) ORDER BY s.performed_at)) AS last
             FROM mine s
             WHERE s.workout_id = (SELECT m.workout_id FROM mine m WHERE m.exercise_id = s.exercise_id ORDER BY m.performed_at DESC LIMIT 1)
             GROUP BY s.exercise_id)
@@ -75,8 +77,8 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
             'goal', (SELECT goal FROM user_settings WHERE owner_sub = $1),
             'exercises', coalesce((
                 SELECT json_agg(json_build_object(
-                    'id', e.id, 'name', e.name, 'muscle_groups', e.muscle_groups, 'equipment', NULLIF(e.equipment, ''),
-                    'last_done', st.last_done, 'days_since', current_date - st.last_done::date,
+                    'id', e.id, 'name', e.name, 'kind', e.kind, 'muscle_groups', e.muscle_groups,
+                    'equipment', NULLIF(e.equipment, ''), 'last_done', st.last_done, 'days_since', current_date - st.last_done::date,
                     'last_session', ls.last, 'sets_last_30d', coalesce(st.sets_30d, 0))
                     ORDER BY st.last_done NULLS FIRST, e.name)
                 FROM exercise e
@@ -87,6 +89,11 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                 SELECT json_object_agg(mg, (SELECT current_date - max(s.performed_at)::date
                                             FROM mine s JOIN exercise e ON e.id = s.exercise_id WHERE mg = ANY(e.muscle_groups)))
                 FROM unnest($3::text[]) mg),
+            'cardio_this_week', (
+                SELECT json_build_object('minutes', round(coalesce(sum(s.duration_s), 0) / 60.0),
+                                         'distance_km', round((coalesce(sum(s.distance_m), 0) / 1000.0)::numeric, 1))
+                FROM mine s JOIN exercise e ON e.id = s.exercise_id
+                WHERE e.kind = 'cardio' AND s.performed_at >= date_trunc('week', now())),
             'done_today', coalesce((
                 SELECT json_agg(json_build_object('exercise', e.name, 'sets', t.n, 'muscle_groups', e.muscle_groups))
                 FROM (SELECT exercise_id, count(*) n FROM mine WHERE performed_at::date = current_date GROUP BY exercise_id) t
@@ -174,6 +181,10 @@ pub enum SetOrder {
     Reps,
     Volume,
     E1rm,
+    /// Cardio: longest first.
+    Distance,
+    /// Cardio: seconds per km; pass desc false for fastest first.
+    Pace,
 }
 
 #[derive(Deserialize, JsonSchema, Default)]
@@ -206,8 +217,8 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
     let mut q: QueryBuilder<Postgres> = QueryBuilder::new(format!(
         "SELECT json_build_object('set_id', s.id, 'workout_id', w.id, 'gym', g.name, 'exercise', e.name,
                 'performed_at', s.performed_at, 'reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
-                'rpe', s.rpe, 'rest_s', s.rest_s,
-                'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
+                'rpe', s.rpe, 'rest_s', s.rest_s, 'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
+                'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
          FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN gym g ON g.id = w.gym_id
          JOIN exercise e ON e.id = s.exercise_id
          WHERE w.owner_sub = "
@@ -255,6 +266,8 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
         SetOrder::Reps => "s.reps".to_owned(),
         SetOrder::Volume => VOLUME.to_owned(),
         SetOrder::E1rm => E1RM.to_owned(),
+        SetOrder::Distance => "s.distance_m".to_owned(),
+        SetOrder::Pace => PACE.to_owned(),
     };
     let dir = if a.desc.unwrap_or(true) {
         "DESC NULLS LAST"
@@ -279,6 +292,12 @@ pub enum Metric {
     Volume,
     Sets,
     Reps,
+    /// Cardio: total metres.
+    Distance,
+    /// Cardio: total seconds.
+    Duration,
+    /// Cardio: best (lowest) seconds per km.
+    Pace,
 }
 
 #[derive(Deserialize, JsonSchema, Clone, Copy, Default)]
@@ -315,6 +334,9 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
         Metric::Volume => format!("sum({VOLUME})"),
         Metric::Sets => "count(*)".to_owned(),
         Metric::Reps => "sum(s.reps)".to_owned(),
+        Metric::Distance => "sum(s.distance_m)".to_owned(),
+        Metric::Duration => "sum(s.duration_s)".to_owned(),
+        Metric::Pace => format!("round(min({PACE})::numeric)"),
     };
     let bucket = match a.bucket {
         Bucket::Day => "day",
@@ -377,16 +399,33 @@ pub async fn personal_records(app: &App, owner: &str, a: RecordsArgs) -> AppResu
                    json_build_object('volume_kg', v, 'workout_id', workout_id, 'date', d) AS r
             FROM (SELECT exercise_id, workout_id, sum({VOLUME}) AS v, min(performed_at)::date AS d FROM mine s
                   GROUP BY exercise_id, workout_id) t
-            WHERE v IS NOT NULL ORDER BY exercise_id, v DESC)
+            WHERE v IS NOT NULL ORDER BY exercise_id, v DESC),
+         longest_distance AS (
+            SELECT DISTINCT ON (exercise_id) exercise_id,
+                   json_build_object('distance_m', distance_m, 'duration_s', duration_s, 'performed_at', performed_at, 'set_id', id) AS r
+            FROM mine WHERE distance_m > 0 ORDER BY exercise_id, distance_m DESC, performed_at),
+         best_pace AS (
+            SELECT DISTINCT ON (exercise_id) exercise_id,
+                   json_build_object('pace_s_per_km', round({PACE}::numeric), 'distance_m', distance_m, 'duration_s', duration_s,
+                                     'performed_at', performed_at, 'set_id', id) AS r
+            FROM mine s WHERE distance_m > 0 AND duration_s > 0 ORDER BY exercise_id, {PACE}, performed_at),
+         longest_duration AS (
+            SELECT DISTINCT ON (exercise_id) exercise_id,
+                   json_build_object('duration_s', duration_s, 'performed_at', performed_at, 'set_id', id) AS r
+            FROM mine WHERE duration_s > 0 ORDER BY exercise_id, duration_s DESC, performed_at)
          SELECT coalesce(json_agg(json_build_object(
                     'exercise', e.name, 'heaviest_set', h.r, 'best_e1rm', b.r,
-                    'max_reps_by_weight_kg', ra.r, 'best_volume_workout', vo.r) ORDER BY e.name), '[]'::json)
+                    'max_reps_by_weight_kg', ra.r, 'best_volume_workout', vo.r,
+                    'longest_distance', ld.r, 'best_pace', bp.r, 'longest_duration', lu.r) ORDER BY e.name), '[]'::json)
          FROM exercise e
          JOIN (SELECT DISTINCT exercise_id FROM mine) m ON m.exercise_id = e.id
          LEFT JOIN heaviest h ON h.exercise_id = e.id
          LEFT JOIN best_e1rm b ON b.exercise_id = e.id
          LEFT JOIN reps_at ra ON ra.exercise_id = e.id
-         LEFT JOIN vol vo ON vo.exercise_id = e.id"
+         LEFT JOIN vol vo ON vo.exercise_id = e.id
+         LEFT JOIN longest_distance ld ON ld.exercise_id = e.id
+         LEFT JOIN best_pace bp ON bp.exercise_id = e.id
+         LEFT JOIN longest_duration lu ON lu.exercise_id = e.id"
     )))
     .bind(owner)
     .bind(exercise)

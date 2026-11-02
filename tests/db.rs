@@ -510,3 +510,93 @@ async fn migration_keeps_structured_equipment_as_text(pool: PgPool) {
         .unwrap();
     assert_eq!(left, 0);
 }
+
+#[sqlx::test]
+async fn cardio_distance_pace_and_records(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    let ex = setup::exercise_create(&app, ME, a(json!({"name": "Treadmill run", "kind": "cardio"})))
+        .await
+        .unwrap();
+    assert_eq!(ex["kind"], "cardio");
+    workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    let added = workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "treadmill", "sets": [
+            {"duration_s": 1500, "distance_m": 5000, "intensity": "incline 1%"},
+            {"duration_s": 1400, "distance_m": 5000}]})),
+    )
+    .await
+    .unwrap();
+    let sets = &added["workout"]["exercises"][0]["sets"];
+    assert_eq!(sets[0]["intensity"], "incline 1%");
+    assert_eq!(sets[1]["distance_m"], 5000.0);
+
+    let pace = search::progress(&app, ME, a(json!({"exercise": "treadmill", "metric": "pace"})))
+        .await
+        .unwrap();
+    assert_eq!(pace["series"][0]["value"], 280.0);
+    let dist = search::progress(&app, ME, a(json!({"exercise": "treadmill", "metric": "distance"})))
+        .await
+        .unwrap();
+    assert_eq!(dist["series"][0]["value"], 10000.0);
+
+    let pr = search::personal_records(&app, ME, a(json!({"exercise": "treadmill"})))
+        .await
+        .unwrap();
+    assert_eq!(pr[0]["best_pace"]["pace_s_per_km"], 280.0);
+    assert_eq!(pr[0]["longest_duration"]["duration_s"], 1500);
+
+    let fastest = search::set_search(&app, ME, a(json!({"order_by": "pace", "desc": false})))
+        .await
+        .unwrap();
+    assert_eq!(fastest[0]["duration_s"], 1400);
+
+    let ov = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
+    assert_eq!(
+        ov["overview"]["cardio_this_week"],
+        json!({"minutes": 48, "distance_km": 10.0})
+    );
+
+    let msg = user_msg(
+        workout::set_add(
+            &app,
+            ME,
+            a(json!({"exercise": "treadmill", "sets": [{"intensity": "level 3"}]})),
+        )
+        .await,
+    );
+    assert!(msg.contains("distance_m"), "{msg}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn migration_turns_cardio_group_into_kind(pool: PgPool) {
+    for m in [
+        include_str!("../migrations/0001_init.sql"),
+        include_str!("../migrations/0002_equipment_description.sql"),
+        include_str!("../migrations/0003_effort_rest_goal.sql"),
+        include_str!("../migrations/0004_equipment_free_text.sql"),
+    ] {
+        sqlx::raw_sql(m).execute(&pool).await.unwrap();
+    }
+    sqlx::raw_sql(
+        "INSERT INTO exercise (owner_sub, name, muscle_groups) VALUES
+            ('a', 'Bike', '{cardio,quads}'), ('a', 'Squat', '{quads}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0005_cardio.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let kinds: Vec<(String, String)> = sqlx::query_as("SELECT name, kind FROM exercise ORDER BY name")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        kinds,
+        [("Bike".into(), "cardio".into()), ("Squat".into(), "strength".into())]
+    );
+}
