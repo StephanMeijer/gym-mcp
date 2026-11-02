@@ -57,7 +57,7 @@ DATABASE_URL=postgres://gym:gym@localhost:5432/gym cargo test
 
 | Env | |
 |---|---|
-| `DATABASE_URL` | required; migrations run on startup |
+| `DATABASE_URL` | required; migrations run on startup. For an encrypted-only Postgres add `?sslmode=verify-full` (or `require` to skip certificate checks). A private CA goes in `&sslrootcert=/path/ca.crt`, or set `SSL_CERT_FILE`; otherwise the system CA store is used. The default `prefer` falls back to plaintext |
 | `PUBLIC_URL` | required; e.g. `https://gym.example.com`. Used as the OAuth `resource`, the required token `aud`, and the allowed `Host` |
 | `OIDC_ISSUER` | required unless `DEV_SUB` is set; your Authelia URL, e.g. `https://auth.example.com` |
 | `BIND_ADDR` | default `0.0.0.0:8080` |
