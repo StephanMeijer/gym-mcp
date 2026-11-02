@@ -84,15 +84,22 @@ fn check_muscle_groups(primary: &[String], secondary: &[String]) -> AppResult<()
 
 // ---------- settings ----------
 
-pub async fn settings_get(app: &App, owner: &str) -> AppResult<Value> {
-    let mut tx = db::begin_read(app, owner).await?;
-    let v: Value = sqlx::query_scalar(
+/// All settings, plus now/today in the user's timezone. Also merged into training_overview.
+pub async fn settings_json(tx: &mut Tx, owner: &str) -> AppResult<Value> {
+    Ok(sqlx::query_scalar(
         "SELECT json_build_object('timezone', current_setting('TimeZone'), 'now', now(), 'today', current_date,
-                                  'goal', (SELECT goal FROM user_settings WHERE owner_sub = $1))",
+                                  'goal', us.goal, 'goals_notes', us.goals_notes,
+                                  'priority_muscle_groups', us.priority_muscle_groups, 'limitations', us.limitations)
+         FROM (SELECT 1) one LEFT JOIN user_settings us ON us.owner_sub = $1",
     )
     .bind(owner)
-    .fetch_one(&mut *tx)
-    .await?;
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+pub async fn settings_get(app: &App, owner: &str) -> AppResult<Value> {
+    let mut tx = db::begin_read(app, owner).await?;
+    let v = settings_json(&mut tx, owner).await?;
     tx.commit().await?;
     Ok(v)
 }
@@ -123,12 +130,39 @@ pub struct SettingsArgs {
     pub timezone: Option<String>,
     /// What training is for; recommendations use it for rep ranges and progression.
     pub goal: Option<Goal>,
+    /// Free-text goals and plans, including events and deadlines ("Hyrox on 14 March, bench 100 kg by summer").
+    /// "" clears it.
+    pub goals_notes: Option<String>,
+    /// Muscle groups to prioritise; coarse names (back, shoulders, legs, arms) expand. [] clears it.
+    pub priority_muscle_groups: Option<Vec<String>>,
+    /// Injuries or limitations to work around ("left shoulder: no overhead pressing"). "" clears it.
+    pub limitations: Option<String>,
 }
 
 pub async fn settings_update(app: &App, owner: &str, a: SettingsArgs) -> AppResult<Value> {
-    if a.timezone.is_none() && a.goal.is_none() {
-        return Err(user_err("pass timezone and/or goal"));
+    if a.timezone.is_none()
+        && a.goal.is_none()
+        && a.goals_notes.is_none()
+        && a.priority_muscle_groups.is_none()
+        && a.limitations.is_none()
+    {
+        return Err(user_err("pass at least one setting"));
     }
+    // Expand coarse names and drop duplicates, keeping the order given.
+    let priority = match &a.priority_muscle_groups {
+        Some(groups) => {
+            let mut out: Vec<String> = Vec::new();
+            for g in groups {
+                for e in expand_muscle_group(g)? {
+                    if !out.contains(&e) {
+                        out.push(e);
+                    }
+                }
+            }
+            Some(out)
+        }
+        None => None,
+    };
     let mut tx = db::begin(app, owner).await?;
     if let Some(tz) = &a.timezone {
         // Postgres validates the name against its own tz database (22023 → user error).
@@ -138,11 +172,18 @@ pub async fn settings_update(app: &App, owner: &str, a: SettingsArgs) -> AppResu
             .await?;
     }
     sqlx::query(
-        "UPDATE user_settings SET timezone = coalesce($2, timezone), goal = coalesce($3, goal) WHERE owner_sub = $1",
+        "UPDATE user_settings SET timezone = coalesce($2, timezone), goal = coalesce($3, goal),
+            goals_notes = CASE WHEN $4::text IS NULL THEN goals_notes ELSE NULLIF(btrim($4), '') END,
+            priority_muscle_groups = CASE WHEN $5::text[] IS NULL THEN priority_muscle_groups ELSE NULLIF($5, '{}') END,
+            limitations = CASE WHEN $6::text IS NULL THEN limitations ELSE NULLIF(btrim($6), '') END
+         WHERE owner_sub = $1",
     )
     .bind(owner)
     .bind(&a.timezone)
     .bind(a.goal.map(Goal::as_str))
+    .bind(&a.goals_notes)
+    .bind(&priority)
+    .bind(&a.limitations)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;

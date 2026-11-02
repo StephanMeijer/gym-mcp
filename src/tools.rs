@@ -35,7 +35,11 @@ Muscle balance: training_overview.muscle_groups has per muscle days_since (prima
 below that or not trained in 14+ days; the judgement is yours.
 For a specific period (\"last 10 days\", \"October\") use muscle_group_volume; for trends over time, progress.
 Effort: when the user says how a set felt, record rpe (1-10; \"2 left in the tank\" = RPE 8, \"to failure\" = 10) and rest_s \
-if mentioned. Ask for their goal once (settings_update goal). Recommend progression from goal + last_session in \
+if mentioned. Ask once for their goal, their goals and plans in their own words (including any event and its date) and \
+any injuries or limitations; save them with settings_update (goal, goals_notes, priority_muscle_groups, limitations). \
+training_overview returns them: take goals_notes into account (taper as a named event gets close), favour \
+priority_muscle_groups (aim for the upper end of their weekly sets), and never suggest exercises that conflict with \
+limitations; pick from exercise_alternatives instead. Recommend progression from goal + last_session in \
 training_overview: e.g. all sets at RPE <= 7 → add weight or reps. If a logged weight doesn't fit the gym's equipment text, mention it.
 Weights: the number on the implement (per dumbbell/kettlebell); barbell = total incl. bar; machine = stack setting. Convert lb to kg.
 Machines: stack weights only compare within one brand. Pass set_add machine (brand/model, read off the photo when \
@@ -92,7 +96,7 @@ type R = Result<CallToolResult, ErrorData>;
 impl GymServer {
     // ----- setup -----
     #[tool(
-        description = "Show the user's timezone, now and today.",
+        description = "Show the user's settings (timezone, goal, goals notes, priority muscle groups, limitations), now and today.",
         annotations(title = "Show settings", read_only_hint = true, open_world_hint = false)
     )]
     async fn settings_get(&self, p: P) -> R {
@@ -100,9 +104,9 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Set the user's IANA timezone (\"Europe/Amsterdam\"); it defines today, weeks and months.",
+        description = "Update settings; only the fields passed change. Timezone (IANA, defines today/weeks/months), goal, goals_notes (free text incl. events and dates), priority_muscle_groups, limitations. \"\" or [] clears a field.",
         annotations(
-            title = "Set timezone",
+            title = "Update settings",
             read_only_hint = false,
             destructive_hint = true,
             idempotent_hint = true,
