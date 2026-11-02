@@ -14,8 +14,15 @@ use crate::resolve::{self, Kind};
 use crate::setup::{self, MUSCLE_GROUPS, expand_opt};
 use crate::workout;
 
-const E1RM: &str = "(s.weight_kg * (1 + s.reps / 30.0))"; // Epley
-const VOLUME: &str = "(s.weight_kg * s.reps)";
+// A unilateral set counts once per side (reps are per side).
+const SIDES: &str = "(CASE WHEN s.unilateral THEN 2 ELSE 1 END)";
+// Both below use LOAD, the load one side moved: a unilateral set logged as a total is split over both sides.
+// Epley; per limb for unilateral sets.
+const E1RM: &str =
+    "(s.weight_kg / CASE WHEN s.unilateral AND s.load_basis = 'total' THEN 2 ELSE 1 END * (1 + s.reps / 30.0))";
+// LOAD * reps * SIDES
+const VOLUME: &str = "(s.weight_kg / CASE WHEN s.unilateral AND s.load_basis = 'total' THEN 2 ELSE 1 END * s.reps
+                       * CASE WHEN s.unilateral THEN 2 ELSE 1 END)";
 const PACE: &str = "(s.duration_s * 1000.0 / NULLIF(s.distance_m, 0))"; // seconds per km
 
 fn limit(l: Option<i64>) -> i64 {
@@ -80,7 +87,8 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                        'gym', (SELECT name FROM gym WHERE id = min(s.gym_id)),
                        'sets', json_agg(json_build_object('reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
                                                           'rpe', s.rpe, 'rest_s', s.rest_s, 'distance_m', s.distance_m,
-                                                          'intensity', NULLIF(s.intensity, ''), 'machine', s.machine)
+                                                          'intensity', NULLIF(s.intensity, ''), 'machine', s.machine,
+                                                          'unilateral', s.unilateral, 'load_basis', s.load_basis)
                                                           ORDER BY s.performed_at)) AS last
             FROM picked s
             GROUP BY s.exercise_id)
@@ -155,7 +163,8 @@ async fn muscle_volume(tx: &mut Tx, owner: &str, lo: DateTime<Utc>, hi: DateTime
     let groups: Vec<String> = MUSCLE_GROUPS.iter().map(|s| s.to_string()).collect();
     Ok(sqlx::query_scalar(
         "WITH hits AS (
-            SELECT g.muscle_group, g.weight, s.performed_at, s.rpe, e.name AS exercise
+            SELECT g.muscle_group, g.weight, s.performed_at, s.rpe, e.name AS exercise,
+                   CASE WHEN s.unilateral THEN 2 ELSE 1 END AS sides -- SIDES
             FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN exercise e ON e.id = s.exercise_id
             CROSS JOIN LATERAL (SELECT unnest(e.muscle_groups), 1.0
                                 UNION ALL SELECT unnest(e.secondary_muscle_groups), 0.5) g(muscle_group, weight)
@@ -174,11 +183,11 @@ async fn muscle_volume(tx: &mut Tx, owner: &str, lo: DateTime<Utc>, hi: DateTime
                                WHERE muscle_group = m.muscle_group AND weight = 1),
                 'from_exercises', coalesce((
                     SELECT json_agg(json_build_object('exercise', exercise, 'sets', sets) ORDER BY sets DESC, exercise)
-                    FROM (SELECT exercise, sum(weight) AS sets FROM win WHERE muscle_group = m.muscle_group
+                    FROM (SELECT exercise, sum(weight * sides) AS sets FROM win WHERE muscle_group = m.muscle_group
                           GROUP BY exercise ORDER BY sets DESC, exercise LIMIT 5) t), '[]'::json))
                 ORDER BY m.i))
          FROM unnest($4::text[]) WITH ORDINALITY m(muscle_group, i)
-         CROSS JOIN LATERAL (SELECT coalesce(sum(weight), 0) AS sets FROM win WHERE muscle_group = m.muscle_group) x",
+         CROSS JOIN LATERAL (SELECT coalesce(sum(weight * sides), 0) AS sets FROM win WHERE muscle_group = m.muscle_group) x",
     )
     .bind(owner)
     .bind(lo)
@@ -356,7 +365,8 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
         "SELECT json_build_object('set_id', s.id, 'workout_id', w.id, 'gym', g.name, 'exercise', e.name,
                 'performed_at', s.performed_at, 'reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
                 'rpe', s.rpe, 'rest_s', s.rest_s, 'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
-                'set_type', s.set_type, 'machine', s.machine, 'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
+                'set_type', s.set_type, 'unilateral', s.unilateral, 'load_basis', s.load_basis,
+                'machine', s.machine, 'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
          FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN gym g ON g.id = w.gym_id
          JOIN exercise e ON e.id = s.exercise_id
          WHERE w.owner_sub = "
@@ -482,8 +492,8 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
         Metric::TopWeight => "max(s.weight_kg)".to_owned(),
         Metric::E1rm => format!("round(max({E1RM})::numeric, 1)"),
         Metric::Volume => format!("sum({VOLUME})"),
-        Metric::Sets => "count(*)".to_owned(),
-        Metric::Reps => "sum(s.reps)".to_owned(),
+        Metric::Sets => format!("sum({SIDES})"),
+        Metric::Reps => format!("sum(s.reps * {SIDES})"),
         Metric::Distance => "sum(s.distance_m)".to_owned(),
         Metric::Duration => "sum(s.duration_s)".to_owned(),
         Metric::Pace => format!("round(min({PACE})::numeric)"),
