@@ -210,6 +210,24 @@ pub async fn gym_list(app: &App, owner: &str) -> AppResult<Value> {
 
 // ---------- exercises ----------
 
+#[derive(Deserialize, JsonSchema, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum ExerciseKind {
+    /// Reps and weight (default).
+    Strength,
+    /// Duration, distance and intensity: bike, treadmill, rower.
+    Cardio,
+}
+
+impl ExerciseKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            ExerciseKind::Strength => "strength",
+            ExerciseKind::Cardio => "cardio",
+        }
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct ExerciseCreateArgs {
     /// Specific enough to compare weights: "Dumbbell bench press", not "bench".
@@ -222,9 +240,11 @@ pub struct ExerciseCreateArgs {
     pub muscle_groups: Vec<String>,
     /// Free text: what it needs ("dumbbells + flat bench"). Empty = bodyweight.
     pub equipment: Option<String>,
+    /// Default strength.
+    pub kind: Option<ExerciseKind>,
 }
 
-pub const EXERCISE_JSON: &str = "json_build_object('id', e.id, 'name', e.name, 'aliases', e.aliases,
+pub const EXERCISE_JSON: &str = "json_build_object('id', e.id, 'name', e.name, 'aliases', e.aliases, 'kind', e.kind,
     'description', NULLIF(e.description, ''), 'muscle_groups', e.muscle_groups, 'equipment', NULLIF(e.equipment, ''))";
 
 async fn exercise_json(tx: &mut Tx, owner: &str, id: i64) -> AppResult<Value> {
@@ -241,8 +261,8 @@ pub async fn exercise_create(app: &App, owner: &str, a: ExerciseCreateArgs) -> A
     check_muscle_groups(&a.muscle_groups)?;
     let mut tx = db::begin(app, owner).await?;
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO exercise (owner_sub, name, aliases, description, muscle_groups, equipment)
-         VALUES ($1, btrim($2), $3, coalesce($4, ''), $5, coalesce($6, '')) RETURNING id",
+        "INSERT INTO exercise (owner_sub, name, aliases, description, muscle_groups, equipment, kind)
+         VALUES ($1, btrim($2), $3, coalesce($4, ''), $5, coalesce($6, ''), coalesce($7, 'strength')) RETURNING id",
     )
     .bind(owner)
     .bind(&a.name)
@@ -250,6 +270,7 @@ pub async fn exercise_create(app: &App, owner: &str, a: ExerciseCreateArgs) -> A
     .bind(&a.description)
     .bind(&a.muscle_groups)
     .bind(&a.equipment)
+    .bind(a.kind.map(ExerciseKind::as_str))
     .fetch_one(&mut *tx)
     .await?;
     let v = exercise_json(&mut tx, owner, id).await?;
@@ -269,6 +290,7 @@ pub struct ExerciseUpdateArgs {
     pub muscle_groups: Option<Vec<String>>,
     /// Replaces the equipment text.
     pub equipment: Option<String>,
+    pub kind: Option<ExerciseKind>,
 }
 
 pub async fn exercise_update(app: &App, owner: &str, a: ExerciseUpdateArgs) -> AppResult<Value> {
@@ -280,7 +302,7 @@ pub async fn exercise_update(app: &App, owner: &str, a: ExerciseUpdateArgs) -> A
     sqlx::query(
         "UPDATE exercise SET name = coalesce(btrim($2), name), aliases = coalesce($3, aliases),
                              description = coalesce($4, description), muscle_groups = coalesce($5, muscle_groups),
-                             equipment = coalesce($6, equipment)
+                             equipment = coalesce($6, equipment), kind = coalesce($7, kind)
          WHERE id = $1",
     )
     .bind(id)
@@ -289,6 +311,7 @@ pub async fn exercise_update(app: &App, owner: &str, a: ExerciseUpdateArgs) -> A
     .bind(&a.description)
     .bind(&a.muscle_groups)
     .bind(&a.equipment)
+    .bind(a.kind.map(ExerciseKind::as_str))
     .execute(&mut *tx)
     .await?;
     let v = exercise_json(&mut tx, owner, id).await?;

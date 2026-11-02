@@ -32,6 +32,8 @@ Effort: when the user says how a set felt, record rpe (1-10; \"2 left in the tan
 if mentioned. Ask for their goal once (settings_update goal). Recommend progression from goal + last_session in \
 training_overview: e.g. all sets at RPE <= 7 → add weight or reps. If a logged weight doesn't fit the gym's equipment text, mention it.
 Weights: the number on the implement (per dumbbell/kettlebell); barbell = total incl. bar; machine = stack setting. Convert lb to kg.
+Cardio: exercises with kind cardio. \"20 min bike, level 8, 7.5 km\" → one set with duration_s 1200, distance_m 7500, \
+intensity \"level 8\". progress/personal_records/set_search report distance and pace (seconds per km).
 Times: answers are in the user's timezone; inputs may be RFC 3339 or local (\"2026-11-02 19:40\").
 Photos stay with you; send only text.";
 
