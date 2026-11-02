@@ -26,7 +26,7 @@ Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles
 **Workout lifecycle**
 - `workout_start` at the gym that already has the open workout resumes it.
 - `workout_start` at a different gym is refused unless you pass `finish_open: true`.
-- A workout is stale when its last activity is older than `WORKOUT_STALE_AFTER`. Stale workouts are closed before any workout tool runs: one with sets is finished at its last set; one with no sets and no notes is deleted.
+- A workout is stale when its last activity is older than `WORKOUT_STALE_AFTER`. The next workout action (start, finish, `set_add`) closes a stale workout first: one with sets is finished at its last set; one with no sets and no notes is deleted. Read tools (`workout_current`, `training_overview`) show the workout as closed but don't save that.
 - Past sessions are entered with `workout_add_past`, then `set_add` with a `workout_id`.
 
 ## Tools
@@ -36,6 +36,8 @@ Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles
 | Setup | `settings_get/update`, `gym_create/update/get/list`, `gym_equipment_set/forget`, `equipment_list/update`, `exercise_create/update/search` |
 | Workout | `workout_start/finish/update/current/add_past`, `workout_list`, `set_add/update/delete` |
 | Analysis | `training_overview`, `search`, `set_search`, `progress`, `personal_records`, `exercise_alternatives` |
+
+Every tool carries MCP annotations, so clients can auto-approve reads and warn on deletes: a title, `readOnlyHint` (read tools run in a `READ ONLY` Postgres transaction, so the database enforces it), and `destructiveHint`/`idempotentHint` on the rest. All tools are `openWorldHint: false`, since they only touch this database.
 
 Wherever a tool takes a gym, exercise or equipment, you can give an id or a name. Names are matched in any word order and with typos tolerated ("trianmore ndsm"). An ambiguous or unknown name returns an error listing the candidates, so the model asks you instead of guessing.
 

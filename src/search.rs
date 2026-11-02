@@ -49,8 +49,8 @@ pub struct OverviewArgs {
 }
 
 pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppResult<Value> {
-    let mut tx = db::begin(app, owner).await?;
-    let closed = workout::close_stale(app, &mut tx, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
+    let closed = workout::close_stale(app, &mut tx, owner, false).await?;
     let gym_id = gym_or_current(&mut tx, owner, &a.gym)
         .await?
         .ok_or_else(|| user_err("no open workout; pass a gym"))?;
@@ -110,7 +110,7 @@ pub struct SearchArgs {
 
 pub async fn search(app: &App, owner: &str, a: SearchArgs) -> AppResult<Value> {
     let lim = limit(a.limit.or(Some(20)));
-    let mut tx = db::begin(app, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
     let mut names = Vec::new();
     for kind in [Kind::Gym, Kind::Exercise, Kind::Equipment] {
         let cands = resolve::candidates(&mut tx, owner, kind).await?;
@@ -193,7 +193,7 @@ pub struct SetSearchArgs {
 }
 
 pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<Value> {
-    let mut tx = db::begin(app, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
     let exercise = opt_id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let equipment = opt_id(&mut tx, owner, Kind::Equipment, &a.equipment).await?;
     let gym = opt_id(&mut tx, owner, Kind::Gym, &a.gym).await?;
@@ -301,7 +301,7 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
     if a.exercise.is_some() == a.muscle_group.is_some() {
         return Err(user_err("give exactly one of exercise or muscle_group"));
     }
-    let mut tx = db::begin(app, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
     let exercise = opt_id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let metric = match a.metric {
         Metric::TopWeight => "max(s.weight_kg)".to_owned(),
@@ -347,7 +347,7 @@ pub struct RecordsArgs {
 }
 
 pub async fn personal_records(app: &App, owner: &str, a: RecordsArgs) -> AppResult<Value> {
-    let mut tx = db::begin(app, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
     let exercise = opt_id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
         "WITH mine AS (
@@ -400,7 +400,7 @@ pub struct AlternativesArgs {
 }
 
 pub async fn exercise_alternatives(app: &App, owner: &str, a: AlternativesArgs) -> AppResult<Value> {
-    let mut tx = db::begin(app, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
     let exercise = resolve::id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let gym = gym_or_current(&mut tx, owner, &a.gym).await?.unwrap_or(-1);
     let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
@@ -441,7 +441,7 @@ pub struct WorkoutListArgs {
 }
 
 pub async fn workout_list(app: &App, owner: &str, a: WorkoutListArgs) -> AppResult<Value> {
-    let mut tx = db::begin(app, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
     let gym = opt_id(&mut tx, owner, Kind::Gym, &a.gym).await?;
     let exercise = opt_id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let ids: Vec<i64> = sqlx::query_scalar(
