@@ -1382,10 +1382,38 @@ async fn unilateral_counts_per_side(pool: PgPool) {
     assert_eq!(pr[0]["max_reps_by_weight_kg"], json!({"20": 10}));
 
     let sets = added["workout"]["exercises"][0]["sets"].as_array().unwrap();
+    // load_basis only means something on a unilateral set.
+    let msg = user_msg(
+        workout::set_add(
+            &app,
+            ME,
+            a(json!({"exercise": "cable fly", "sets": [{"reps": 10, "weight_kg": 40}], "load_basis": "total"})),
+        )
+        .await,
+    );
+    assert!(msg.contains("unilateral"), "{msg}");
+    let msg =
+        user_msg(workout::set_update(&app, ME, a(json!({"set_id": sets[0]["set_id"], "load_basis": "total"}))).await);
+    assert!(msg.contains("unilateral"), "{msg}");
+    // Back to the default convention: 40 kg per side.
+    workout::set_update(
+        &app,
+        ME,
+        a(json!({"set_id": sets[2]["set_id"], "load_basis": "default"})),
+    )
+    .await
+    .unwrap();
+    let cleared = newest(app.clone()).await;
+    assert_eq!(cleared["load_basis"], Value::Null);
+    assert_eq!(cleared["volume_kg"], 800.0);
+    workout::set_update(&app, ME, a(json!({"set_id": sets[2]["set_id"], "load_basis": "total"})))
+        .await
+        .unwrap();
     workout::set_update(&app, ME, a(json!({"set_id": sets[2]["set_id"], "unilateral": false})))
         .await
         .unwrap();
     assert_eq!(chest(app.clone()).await, 4.0);
+    assert_eq!(newest(app.clone()).await["load_basis"], Value::Null);
     let sets_metric = search::progress(&app, ME, a(json!({"exercise": "cable fly", "metric": "sets"})))
         .await
         .unwrap();
