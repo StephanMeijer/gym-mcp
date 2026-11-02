@@ -45,6 +45,8 @@ training_overview: e.g. all sets at RPE <= 7 → add weight or reps. If a logged
 Set type: record warm-ups (set_type warmup), deliberately partial reps (partial) and sets cut short (interrupted); \
 only working sets count towards volume, progress, personal records and last_session.
 Weights: the number on the implement (per dumbbell/kettlebell); barbell = total incl. bar; machine = stack setting. Convert lb to kg.
+One arm or leg at a time (single-arm row, Bulgarian split squat): set_add unilateral true, reps per side; it then counts \
+once per side. Pass load_basis total only when the weight is for both sides together.
 Machines: stack weights only compare within one brand. Pass set_add machine (brand/model, read off the photo when \
 visible; reuse a name from machines_used in training_overview). Omitted, it reuses the last machine for that exercise \
 at this gym; check machine_source in the result. Note in the gym's equipment text which brands it has \

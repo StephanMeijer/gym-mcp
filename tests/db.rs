@@ -1321,3 +1321,111 @@ async fn only_working_sets_count(pool: PgPool) {
         json!({"minutes": 10, "distance_km": 4.0})
     );
 }
+
+#[sqlx::test]
+async fn unilateral_counts_per_side(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(1)})))
+        .await
+        .unwrap();
+    let chest = |app: App| async move {
+        search::muscle_group_volume(&app, ME, a(json!({"days": 7})))
+            .await
+            .unwrap()["muscle_groups"]["chest"]["sets"]
+            .clone()
+    };
+    let add = |app: App, extra: Value| async move {
+        let mut args = json!({"exercise": "cable fly", "sets": [{"reps": 10, "weight_kg": 20}]});
+        args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        workout::set_add(&app, ME, a(args)).await.unwrap()
+    };
+    let newest = |app: App| async move {
+        search::set_search(&app, ME, a(json!({"exercise": "cable fly", "limit": 1})))
+            .await
+            .unwrap()[0]
+            .clone()
+    };
+
+    add(app.clone(), json!({})).await;
+    assert_eq!(chest(app.clone()).await, 1.0);
+    assert_eq!(newest(app.clone()).await["volume_kg"], 200.0);
+
+    // 10 per side at 20 kg: twice the work of the bilateral set, same per-limb e1RM.
+    add(app.clone(), json!({"unilateral": true})).await;
+    assert_eq!(chest(app.clone()).await, 3.0);
+    let uni = newest(app.clone()).await;
+    assert_eq!(uni["unilateral"], true);
+    assert_eq!(uni["volume_kg"], 400.0);
+    assert_eq!(uni["e1rm_kg"], 26.7);
+
+    // Logged as 40 kg for both sides together: the same work.
+    let added = add(
+        app.clone(),
+        json!({"unilateral": true, "load_basis": "total", "sets": [{"reps": 10, "weight_kg": 40}]}),
+    )
+    .await;
+    let total = newest(app.clone()).await;
+    assert_eq!(total["load_basis"], "total");
+    assert_eq!(total["volume_kg"], 400.0);
+    assert_eq!(total["e1rm_kg"], 26.7);
+    assert_eq!(chest(app.clone()).await, 5.0);
+    // 40 kg total and 20 kg per side are the same weight.
+    let top = search::progress(&app, ME, a(json!({"exercise": "cable fly", "metric": "top_weight"})))
+        .await
+        .unwrap();
+    assert_eq!(top["series"][0]["value"], 20.0);
+    let pr = search::personal_records(&app, ME, a(json!({"exercise": "cable fly"})))
+        .await
+        .unwrap();
+    assert_eq!(pr[0]["heaviest_set"]["weight_kg"], 20.0);
+    assert_eq!(pr[0]["max_reps_by_weight_kg"], json!({"20": 10}));
+
+    let sets = added["workout"]["exercises"][0]["sets"].as_array().unwrap();
+    // load_basis only means something on a unilateral set.
+    let msg = user_msg(
+        workout::set_add(
+            &app,
+            ME,
+            a(json!({"exercise": "cable fly", "sets": [{"reps": 10, "weight_kg": 40}], "load_basis": "total"})),
+        )
+        .await,
+    );
+    assert!(msg.contains("unilateral"), "{msg}");
+    let msg =
+        user_msg(workout::set_update(&app, ME, a(json!({"set_id": sets[0]["set_id"], "load_basis": "total"}))).await);
+    assert!(msg.contains("unilateral"), "{msg}");
+    // Back to the default convention: 40 kg per side.
+    workout::set_update(
+        &app,
+        ME,
+        a(json!({"set_id": sets[2]["set_id"], "load_basis": "default"})),
+    )
+    .await
+    .unwrap();
+    let cleared = newest(app.clone()).await;
+    assert_eq!(cleared["load_basis"], Value::Null);
+    assert_eq!(cleared["volume_kg"], 800.0);
+    workout::set_update(&app, ME, a(json!({"set_id": sets[2]["set_id"], "load_basis": "total"})))
+        .await
+        .unwrap();
+    workout::set_update(&app, ME, a(json!({"set_id": sets[2]["set_id"], "unilateral": false})))
+        .await
+        .unwrap();
+    assert_eq!(chest(app.clone()).await, 4.0);
+    assert_eq!(newest(app.clone()).await["load_basis"], Value::Null);
+    let sets_metric = search::progress(&app, ME, a(json!({"exercise": "cable fly", "metric": "sets"})))
+        .await
+        .unwrap();
+    assert_eq!(sets_metric["series"][0]["value"], 4);
+    // The best e1RM reports the per-side weight it was computed from.
+    add(
+        app.clone(),
+        json!({"unilateral": true, "load_basis": "total", "sets": [{"reps": 10, "weight_kg": 120}]}),
+    )
+    .await;
+    let pr = search::personal_records(&app, ME, a(json!({"exercise": "cable fly"})))
+        .await
+        .unwrap();
+    assert_eq!(pr[0]["best_e1rm"]["weight_kg"], 60.0);
+}

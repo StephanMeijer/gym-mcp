@@ -128,6 +128,7 @@ pub async fn workout_json(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResul
                                    'set_id', s.id, 'set_number', s.n, 'performed_at', s.performed_at,
                                    'reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
                                    'rpe', s.rpe, 'rest_s', s.rest_s, 'set_type', s.set_type,
+                                   'unilateral', s.unilateral, 'load_basis', s.load_basis,
                                    'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
                                    'machine', s.machine, 'notes', NULLIF(s.notes, '')) ORDER BY s.performed_at, s.id)) AS obj
                     FROM (SELECT ws.*, row_number() OVER (PARTITION BY ws.exercise_id ORDER BY ws.performed_at, ws.id) AS n
@@ -400,6 +401,38 @@ impl SetType {
     }
 }
 
+/// What weight_kg means on a unilateral set. Omit for the default convention.
+#[derive(Deserialize, JsonSchema, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadBasis {
+    /// The default convention; in set_update, clears an earlier load_basis.
+    Default,
+    /// The number on one dumbbell/kettlebell.
+    PerImplement,
+    /// The load one side moved.
+    PerSide,
+    /// The load for both sides together.
+    Total,
+}
+
+impl LoadBasis {
+    /// "default" is stored as NULL.
+    fn as_str(self) -> &'static str {
+        match self {
+            LoadBasis::Default => "default",
+            LoadBasis::PerImplement => "per_implement",
+            LoadBasis::PerSide => "per_side",
+            LoadBasis::Total => "total",
+        }
+    }
+
+    fn is_set(b: Option<Self>) -> bool {
+        b.is_some_and(|b| !matches!(b, LoadBasis::Default))
+    }
+}
+
+const LOAD_BASIS_NEEDS_UNILATERAL: &str = "load_basis applies only to unilateral sets; pass unilateral true";
+
 #[derive(Deserialize, JsonSchema)]
 pub struct SetInput {
     pub reps: Option<i32>,
@@ -432,6 +465,10 @@ pub struct SetAddArgs {
     /// Machine brand/model for all these sets ("Technogym Selection"), read off the photo when visible.
     /// Omit to reuse the last machine for this exercise at this gym; "" = unknown.
     pub machine: Option<String>,
+    /// One arm/leg at a time: reps are per side and each set counts once per side. Default false.
+    pub unilateral: Option<bool>,
+    /// For all these sets; omit for the default convention.
+    pub load_basis: Option<LoadBasis>,
 }
 
 /// The machine for new sets and where it came from: given, last_used_here, or none.
@@ -518,6 +555,9 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
     {
         return Err(user_err("each set needs reps, duration_s or distance_m"));
     }
+    if LoadBasis::is_set(a.load_basis) && a.unilateral != Some(true) {
+        return Err(user_err(LOAD_BASIS_NEEDS_UNILATERAL));
+    }
     let mut tx = db::begin(app, owner).await?;
     let mut closed = None;
     let workout_id = match a.workout_id {
@@ -555,8 +595,8 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         fit_in_window(&mut tx, &mut t, at, now).await?;
         sqlx::query(
             "INSERT INTO workout_set (workout_id, exercise_id, performed_at, reps, weight_kg, duration_s, rpe, rest_s, notes,
-                                      distance_m, intensity, machine, set_type)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, coalesce($9, ''), $10, coalesce($11, ''), $12, $13)",
+                                      distance_m, intensity, machine, set_type, unilateral, load_basis)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, coalesce($9, ''), $10, coalesce($11, ''), $12, $13, $14, NULLIF($15, 'default'))",
         )
         .bind(t.id)
         .bind(exercise_id)
@@ -571,6 +611,8 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         .bind(&s.intensity)
         .bind(&machine)
         .bind(s.set_type.unwrap_or_default().as_str())
+        .bind(a.unilateral.unwrap_or(false))
+        .bind(a.load_basis.map(LoadBasis::as_str))
         .execute(&mut *tx)
         .await?;
     }
@@ -602,6 +644,10 @@ pub struct SetUpdateArgs {
     pub rpe: Option<f64>,
     pub rest_s: Option<i32>,
     pub set_type: Option<SetType>,
+    /// Reps are per side; the set counts once per side. false also clears load_basis.
+    pub unilateral: Option<bool>,
+    /// Only on unilateral sets; default = back to the default convention.
+    pub load_basis: Option<LoadBasis>,
     pub performed_at: Option<String>,
     pub notes: Option<String>,
 }
@@ -618,6 +664,20 @@ async fn set_workout(tx: &mut Tx, owner: &str, set_id: i64) -> AppResult<i64> {
 pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
     let workout_id = set_workout(&mut tx, owner, a.set_id).await?;
+    if LoadBasis::is_set(a.load_basis) {
+        let unilateral = match a.unilateral {
+            Some(u) => u,
+            None => {
+                sqlx::query_scalar("SELECT unilateral FROM workout_set WHERE id = $1")
+                    .bind(a.set_id)
+                    .fetch_one(&mut *tx)
+                    .await?
+            }
+        };
+        if !unilateral {
+            return Err(user_err(LOAD_BASIS_NEEDS_UNILATERAL));
+        }
+    }
     let exercise_id = match &a.exercise {
         Some(e) => Some(resolve::id(&mut tx, owner, Kind::Exercise, e).await?),
         None => None,
@@ -639,7 +699,9 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
             notes = coalesce($7, notes), rpe = coalesce($8, rpe), rest_s = coalesce($9, rest_s),
             distance_m = coalesce($10, distance_m), intensity = coalesce($11, intensity),
             machine = CASE WHEN $12::text IS NULL THEN machine ELSE NULLIF(btrim($12), '') END,
-            set_type = coalesce($13, set_type), updated_at = now()
+            set_type = coalesce($13, set_type), unilateral = coalesce($14, unilateral),
+            load_basis = CASE WHEN NOT coalesce($14, unilateral) THEN NULL WHEN $15::text IS NULL THEN load_basis ELSE NULLIF($15, 'default') END,
+            updated_at = now()
          WHERE id = $1",
     )
     .bind(a.set_id)
@@ -655,6 +717,8 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
     .bind(&a.intensity)
     .bind(&a.machine)
     .bind(a.set_type.map(SetType::as_str))
+    .bind(a.unilateral)
+    .bind(a.load_basis.map(LoadBasis::as_str))
     .execute(&mut *tx)
     .await?;
     let w = workout_json(&mut tx, owner, workout_id).await?;
