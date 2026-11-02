@@ -1,6 +1,11 @@
 # Reusable image build. push=false: validate that the Dockerfile builds (CI).
 # push=true: build each arch natively, push by digest, merge into one multi-arch
 # manifest tagged X.Y.Z / X.Y / X / latest, and attest build provenance.
+#
+# Jobs declare no `permissions:` and inherit the caller's. A nested job asking for
+# more than the caller has fails the whole run ("workflow file issue"), and PRs from
+# forks and bots (release-plz) only ever get a read-only token. So CI calls this with
+# read-only access, and only release.yml grants packages/id-token/attestations write.
 name: Docker
 
 on:
@@ -32,9 +37,6 @@ jobs:
         include:
           - { arch: amd64, platform: linux/amd64, runner: ubuntu-latest }
           - { arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -91,11 +93,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/download-artifact@v8
         with:

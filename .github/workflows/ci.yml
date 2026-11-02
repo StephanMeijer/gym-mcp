@@ -68,9 +68,6 @@ jobs:
       push: false
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
 
   # Tags vX.Y.Z + creates the GitHub release when Cargo.toml's version has no tag yet
   # (i.e. right after a release PR merges). No `concurrency:` here: a cancelled
