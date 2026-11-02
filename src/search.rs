@@ -103,7 +103,7 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
             'cardio_this_week', (
                 SELECT json_build_object('minutes', round(coalesce(sum(s.duration_s), 0) / 60.0),
                                          'distance_km', round((coalesce(sum(s.distance_m), 0) / 1000.0)::numeric, 1))
-                FROM work s JOIN exercise e ON e.id = s.exercise_id
+                FROM mine s JOIN exercise e ON e.id = s.exercise_id
                 WHERE e.kind = 'cardio' AND s.performed_at >= date_trunc('week', now())),
             'done_today', coalesce((
                 SELECT json_agg(json_build_object('exercise', e.name, 'sets', t.n, 'muscle_groups', e.muscle_groups,

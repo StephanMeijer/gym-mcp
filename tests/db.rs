@@ -1273,4 +1273,21 @@ async fn only_working_sets_count(pool: PgPool) {
         .unwrap();
     assert_eq!(quads(app.clone()).await, 3.0);
     assert_eq!(heaviest(app.clone()).await, 160.0);
+
+    // cardio minutes count every set, warm-ups included
+    setup::exercise_create(&app, ME, a(json!({"name": "Bike", "kind": "cardio"})))
+        .await
+        .unwrap();
+    workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "bike", "sets": [{"duration_s": 600, "distance_m": 4000, "set_type": "warmup"}]})),
+    )
+    .await
+    .unwrap();
+    let ov = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
+    assert_eq!(
+        ov["overview"]["cardio_this_week"],
+        json!({"minutes": 10, "distance_km": 4.0})
+    );
 }
