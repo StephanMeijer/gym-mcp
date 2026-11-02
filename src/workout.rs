@@ -115,6 +115,7 @@ pub async fn workout_json(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResul
             'started_at', w.started_at,
             'finished_at', w.finished_at,
             'finish_reason', w.finish_reason,
+            'time_estimated', w.time_estimated,
             'notes', NULLIF(w.notes, ''),
             'set_count', (SELECT count(*) FROM workout_set WHERE workout_id = w.id),
             'exercises', coalesce((
@@ -133,7 +134,7 @@ pub async fn workout_json(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResul
                                    'avg_hr', s.avg_hr, 'max_hr', s.max_hr, 'calories', s.calories,
                                    'avg_incline_pct', s.avg_incline_pct, 'max_incline_pct', s.max_incline_pct,
                                    'avg_speed_kmh', s.avg_speed_kmh, 'max_speed_kmh', s.max_speed_kmh,
-                                   'machine', s.machine, 'variant', s.variant,
+                                   'machine', s.machine, 'variant', s.variant, 'time_estimated', s.time_estimated,
                                    'notes', NULLIF(s.notes, '')) ORDER BY s.performed_at, s.id)) AS obj
                     FROM (SELECT ws.*, row_number() OVER (PARTITION BY ws.exercise_id ORDER BY ws.performed_at, ws.id) AS n
                           FROM workout_set ws WHERE ws.workout_id = w.id) s
@@ -239,6 +240,8 @@ pub struct AddPastArgs {
     pub started_at: String,
     pub finished_at: String,
     pub notes: Option<String>,
+    /// The times are a guess ("sometime Saturday afternoon").
+    pub time_estimated: Option<bool>,
 }
 
 /// A workout that already happened ("forgot to log yesterday"). Created finished, so it never
@@ -256,14 +259,15 @@ pub async fn add_past(app: &App, owner: &str, a: AddPastArgs) -> AppResult<Value
         return Err(user_err("finished_at is before started_at"));
     }
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO workout (owner_sub, gym_id, started_at, finished_at, finish_reason, notes)
-         VALUES ($1, $2, $3, $4, 'manual', coalesce($5, '')) RETURNING id",
+        "INSERT INTO workout (owner_sub, gym_id, started_at, finished_at, finish_reason, notes, time_estimated)
+         VALUES ($1, $2, $3, $4, 'manual', coalesce($5, ''), $6) RETURNING id",
     )
     .bind(owner)
     .bind(gym_id)
     .bind(start)
     .bind(end)
     .bind(&a.notes)
+    .bind(a.time_estimated.unwrap_or(false))
     .fetch_one(&mut *tx)
     .await?;
     let w = workout_json(&mut tx, owner, id).await?;
@@ -318,6 +322,8 @@ pub struct UpdateArgs {
     /// later"). The finish moves too, unless finished_at is given.
     #[serde(default)]
     pub shift_sets: bool,
+    /// started_at is a guess. Passing a new started_at clears it unless this says it's still estimated.
+    pub time_estimated: Option<bool>,
 }
 
 pub async fn update(app: &App, owner: &str, a: UpdateArgs) -> AppResult<Value> {
@@ -367,7 +373,9 @@ pub async fn update(app: &App, owner: &str, a: UpdateArgs) -> AppResult<Value> {
             finished_at = coalesce($3, finished_at),
             finish_reason = CASE WHEN $3::timestamptz IS NOT NULL AND finished_at IS NULL THEN 'manual' ELSE finish_reason END,
             gym_id = coalesce($4, gym_id),
-            notes = coalesce($5, notes)
+            notes = coalesce($5, notes),
+            -- a new start is the real one, unless it says it's still a guess
+            time_estimated = CASE WHEN $2::timestamptz IS NOT NULL THEN coalesce($6, false) ELSE coalesce($6, time_estimated) END
          WHERE id = $1",
     )
     .bind(a.workout_id)
@@ -375,6 +383,7 @@ pub async fn update(app: &App, owner: &str, a: UpdateArgs) -> AppResult<Value> {
     .bind(finished)
     .bind(gym_id)
     .bind(&a.notes)
+    .bind(a.time_estimated)
     .execute(&mut *tx)
     .await?;
     let outside: bool = sqlx::query_scalar(
@@ -523,6 +532,8 @@ pub struct SetInput {
     pub cardio: CardioMetrics,
     /// When the set was performed, if not just now. RFC 3339, or local time like "19:40" on a date: "2026-11-02 19:40".
     pub performed_at: Option<String>,
+    /// performed_at is a guess ("around noon").
+    pub time_estimated: Option<bool>,
     pub notes: Option<String>,
 }
 
@@ -680,9 +691,10 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         sqlx::query(
             "INSERT INTO workout_set (workout_id, exercise_id, performed_at, reps, weight_kg, duration_s, rpe, rest_s, notes,
                                       distance_m, intensity, machine, set_type, unilateral, load_basis, variant,
-                                      avg_hr, max_hr, calories, avg_incline_pct, max_incline_pct, avg_speed_kmh, max_speed_kmh)
+                                      avg_hr, max_hr, calories, avg_incline_pct, max_incline_pct, avg_speed_kmh, max_speed_kmh,
+                                      time_estimated)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, coalesce($9, ''), $10, coalesce($11, ''), $12, $13, $14, NULLIF($15, 'default'), $16,
-                     $17, $18, $19, $20, $21, $22, $23)",
+                     $17, $18, $19, $20, $21, $22, $23, $24)",
         )
         .bind(t.id)
         .bind(exercise_id)
@@ -707,6 +719,7 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         .bind(s.cardio.max_incline_pct)
         .bind(avg_speed)
         .bind(max_speed)
+        .bind(s.time_estimated.unwrap_or(false))
         .execute(&mut *tx)
         .await?;
     }
@@ -751,6 +764,8 @@ pub struct SetUpdateArgs {
     #[serde(flatten)]
     pub cardio: CardioMetrics,
     pub performed_at: Option<String>,
+    /// The time is a guess ("around noon"). Passing a new time clears it unless this says it's still estimated.
+    pub time_estimated: Option<bool>,
     pub notes: Option<String>,
 }
 
@@ -870,7 +885,10 @@ async fn update_one(
             variant = CASE WHEN $16::text IS NULL THEN variant ELSE NULLIF(btrim($16), '') END,
             avg_hr = coalesce($17, avg_hr), max_hr = coalesce($18, max_hr), calories = coalesce($19, calories),
             avg_incline_pct = coalesce($20, avg_incline_pct), max_incline_pct = coalesce($21, max_incline_pct),
-            avg_speed_kmh = coalesce($22, avg_speed_kmh), max_speed_kmh = coalesce($23, max_speed_kmh), updated_at = now()
+            avg_speed_kmh = coalesce($22, avg_speed_kmh), max_speed_kmh = coalesce($23, max_speed_kmh),
+            -- a new time is the real one, unless it says it's still a guess
+            time_estimated = CASE WHEN $6::timestamptz IS NOT NULL THEN coalesce($24, false) ELSE coalesce($24, time_estimated) END,
+            updated_at = now()
          WHERE id = $1",
     )
     .bind(set_id)
@@ -896,6 +914,7 @@ async fn update_one(
     .bind(a.cardio.max_incline_pct)
     .bind(avg_speed)
     .bind(max_speed)
+    .bind(a.time_estimated)
     .execute(&mut **tx)
     .await?;
     Ok(workout_id)
