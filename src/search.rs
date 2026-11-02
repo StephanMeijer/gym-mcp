@@ -55,8 +55,7 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
     let gym_id = gym_or_current(&mut tx, owner, &a.gym)
         .await?
         .ok_or_else(|| user_err("no open workout; pass a gym"))?;
-    let groups: Vec<String> = MUSCLE_GROUPS.iter().map(|s| s.to_string()).collect();
-    let v: Value = sqlx::query_scalar(
+    let mut v: Value = sqlx::query_scalar(
         "WITH mine AS (SELECT s.*, w.gym_id FROM workout_set s JOIN workout w ON w.id = s.workout_id WHERE w.owner_sub = $1),
          stats AS (SELECT exercise_id, max(performed_at) AS last_done,
                           count(*) FILTER (WHERE performed_at >= now() - interval '30 days') AS sets_30d
@@ -99,10 +98,6 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                 LEFT JOIN last_session ls ON ls.exercise_id = e.id
                 LEFT JOIN here h ON h.exercise_id = e.id
                 WHERE e.owner_sub = $1), '[]'::json),
-            'days_since_muscle_group', (
-                SELECT json_object_agg(mg, (SELECT current_date - max(s.performed_at)::date
-                                            FROM mine s JOIN exercise e ON e.id = s.exercise_id WHERE mg = ANY(e.muscle_groups)))
-                FROM unnest($3::text[]) mg),
             'cardio_this_week', (
                 SELECT json_build_object('minutes', round(coalesce(sum(s.duration_s), 0) / 60.0),
                                          'distance_km', round((coalesce(sum(s.distance_m), 0) / 1000.0)::numeric, 1))
@@ -116,11 +111,42 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
     )
     .bind(owner)
     .bind(gym_id)
-    .bind(&groups)
     .fetch_one(&mut *tx)
     .await?;
+    v["muscle_groups"] = muscle_groups_json(&mut tx, owner).await?;
     tx.commit().await?;
     Ok(json!({"overview": v, "closed_stale": closed}))
+}
+
+/// Per muscle group: recency, weighted sets (primary 1, secondary 0.5) over rolling 7 and 28 days,
+/// training days and average RPE. Strength exercises only; local days via the session TimeZone.
+async fn muscle_groups_json(tx: &mut Tx, owner: &str) -> AppResult<Value> {
+    let groups: Vec<String> = MUSCLE_GROUPS.iter().map(|s| s.to_string()).collect();
+    Ok(sqlx::query_scalar(
+        "WITH hits AS (
+            SELECT g.muscle_group, g.weight, s.performed_at, s.rpe
+            FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN exercise e ON e.id = s.exercise_id
+            CROSS JOIN LATERAL (SELECT unnest(e.muscle_groups), 1.0
+                                UNION ALL SELECT unnest(e.secondary_muscle_groups), 0.5) g(muscle_group, weight)
+            WHERE w.owner_sub = $1 AND e.kind = 'strength')
+         SELECT json_object_agg(muscle_group, stats ORDER BY i) FROM (
+            SELECT m.muscle_group, m.i, json_build_object(
+                'days_since', current_date - (max(h.performed_at) FILTER (WHERE h.weight = 1))::date,
+                'sets_7d', coalesce(sum(h.weight) FILTER (WHERE h.performed_at >= now() - interval '7 days'), 0),
+                'sets_28d', coalesce(sum(h.weight) FILTER (WHERE h.performed_at >= now() - interval '28 days'), 0),
+                'train_days_28d', count(DISTINCT h.performed_at::date)
+                                      FILTER (WHERE h.weight = 1 AND h.performed_at >= now() - interval '28 days'),
+                'avg_rpe_28d', round((avg(h.rpe)
+                                      FILTER (WHERE h.weight = 1 AND h.performed_at >= now() - interval '28 days'))::numeric, 1)
+            ) AS stats
+            FROM unnest($2::text[]) WITH ORDINALITY m(muscle_group, i)
+            LEFT JOIN hits h ON h.muscle_group = m.muscle_group
+            GROUP BY m.muscle_group, m.i) x",
+    )
+    .bind(owner)
+    .bind(&groups)
+    .fetch_one(&mut **tx)
+    .await?)
 }
 
 // ---------- search ----------
