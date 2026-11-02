@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/StephanMeijer/gym-mcp/compare/v0.3.0...v0.3.1) - 2026-11-02
+
+### Added
+
+- *(measurements)* waist, body fat, resting heart rate and blood pressure
+- *(measurements)* track body height
+- *(measurements)* track body weight over time
+
+### Other
+
+- *(measurements)* rename height kind to body_height
+
 ## [0.3.0](https://github.com/StephanMeijer/gym-mcp/compare/v0.2.0...v0.3.0) - 2026-11-02
 
 ### Added
