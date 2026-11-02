@@ -134,6 +134,10 @@ pub async fn search(app: &App, owner: &str, a: SearchArgs) -> AppResult<Value> {
             SELECT json_build_object('type', 'exercise', 'id', e.id, 'name', e.name, 'text', e.description, 'rank', ts_rank(e.description_tsv, q.q))
             FROM exercise e, q WHERE e.owner_sub = $1 AND e.description_tsv @@ q.q
             UNION ALL
+            SELECT json_build_object('type', 'equipment', 'id', eq.id, 'name', eq.name, 'text', eq.description,
+                                     'rank', ts_rank(eq.description_tsv, q.q))
+            FROM equipment eq, q WHERE eq.owner_sub = $1 AND eq.description_tsv @@ q.q
+            UNION ALL
             SELECT json_build_object('type', 'workout', 'id', w.id, 'started_at', w.started_at, 'text', w.notes, 'rank', ts_rank(w.notes_tsv, q.q))
             FROM workout w, q WHERE w.owner_sub = $1 AND w.notes_tsv @@ q.q
             UNION ALL

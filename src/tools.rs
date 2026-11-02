@@ -24,6 +24,8 @@ Gym logbook. Typical flow:
    Exercises marked 'unverified' need equipment we don't know the gym has: ask, then record it with gym_equipment_set \
    (status 'absent' if the gym doesn't have it).
 5. When the user leaves → workout_finish. Stale workouts close automatically.
+Descriptions: when creating exercises or equipment, add a short description (what it looks like, how it's set up) \
+so it can be recognized from a photo later; equipment description = the kind, gym_equipment_set notes = that gym's unit.
 Weights: the number on the implement (per dumbbell/kettlebell); barbell = total incl. bar; machine = stack setting. Convert lb to kg.
 Times: answers are in the user's timezone; inputs may be RFC 3339 or local (\"2026-11-02 19:40\").
 Photos stay with you; send only text.";
@@ -114,6 +116,11 @@ impl GymServer {
     #[tool(description = "Set equipment at a gym back to unknown.")]
     async fn gym_equipment_forget(&self, p: P, a: Parameters<GymEquipmentForgetArgs>) -> R {
         call!(self, p, gym_equipment_forget, a)
+    }
+
+    #[tool(description = "Change an equipment kind's name, aliases, category or description (applies at every gym).")]
+    async fn equipment_update(&self, p: P, a: Parameters<EquipmentUpdateArgs>) -> R {
+        call!(self, p, equipment_update, a)
     }
 
     #[tool(description = "All equipment kinds defined so far.")]

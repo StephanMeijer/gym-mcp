@@ -9,7 +9,7 @@ Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles
 | | |
 |---|---|
 | **Gym** | name + aliases; `inventory_complete` means unknown equipment counts as absent |
-| **Equipment** | a kind of gear (leg press, dumbbells, mat), with a category |
+| **Equipment** | a kind of gear (leg press, dumbbells, mat), with a category and a description |
 | **Gym equipment** | `present` (+ quantity, available weights, max load) or `absent`. **No row = unknown** |
 | **Exercise** | needs *all* of its equipment (none = bodyweight), plus muscle groups from a fixed list |
 | **Workout** | one visit to one gym; at most one open at a time |
@@ -33,7 +33,7 @@ Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles
 
 | Group | Tools |
 |---|---|
-| Setup | `settings_get/update`, `gym_create/update/get/list`, `gym_equipment_set/forget`, `equipment_list`, `exercise_create/update/search` |
+| Setup | `settings_get/update`, `gym_create/update/get/list`, `gym_equipment_set/forget`, `equipment_list/update`, `exercise_create/update/search` |
 | Workout | `workout_start/finish/update/current/add_past`, `workout_list`, `set_add/update/delete` |
 | Analysis | `training_overview`, `search`, `set_search`, `progress`, `personal_records`, `exercise_alternatives` |
 
