@@ -62,32 +62,64 @@ fn check_muscle_groups(groups: &[String]) -> AppResult<()> {
 pub async fn settings_get(app: &App, owner: &str) -> AppResult<Value> {
     let mut tx = db::begin_read(app, owner).await?;
     let v: Value = sqlx::query_scalar(
-        "SELECT json_build_object('timezone', current_setting('TimeZone'), 'now', now(), 'today', current_date)",
+        "SELECT json_build_object('timezone', current_setting('TimeZone'), 'now', now(), 'today', current_date,
+                                  'goal', (SELECT goal FROM user_settings WHERE owner_sub = $1))",
     )
+    .bind(owner)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
     Ok(v)
 }
 
+#[derive(Deserialize, JsonSchema, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum Goal {
+    Strength,
+    Hypertrophy,
+    Endurance,
+    General,
+}
+
+impl Goal {
+    fn as_str(self) -> &'static str {
+        match self {
+            Goal::Strength => "strength",
+            Goal::Hypertrophy => "hypertrophy",
+            Goal::Endurance => "endurance",
+            Goal::General => "general",
+        }
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct SettingsArgs {
     /// IANA timezone, e.g. "Europe/Amsterdam". Used for "today", weeks (ISO, Monday) and months, and for reading local times.
-    pub timezone: String,
+    pub timezone: Option<String>,
+    /// What training is for; recommendations use it for rep ranges and progression.
+    pub goal: Option<Goal>,
 }
 
 pub async fn settings_update(app: &App, owner: &str, a: SettingsArgs) -> AppResult<Value> {
+    if a.timezone.is_none() && a.goal.is_none() {
+        return Err(user_err("pass timezone and/or goal"));
+    }
     let mut tx = db::begin(app, owner).await?;
-    // Postgres validates the name against its own tz database (22023 → user error).
-    sqlx::query("SELECT set_config('TimeZone', $1, true)")
-        .bind(&a.timezone)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("UPDATE user_settings SET timezone = $2 WHERE owner_sub = $1")
-        .bind(owner)
-        .bind(&a.timezone)
-        .execute(&mut *tx)
-        .await?;
+    if let Some(tz) = &a.timezone {
+        // Postgres validates the name against its own tz database (22023 → user error).
+        sqlx::query("SELECT set_config('TimeZone', $1, true)")
+            .bind(tz)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query(
+        "UPDATE user_settings SET timezone = coalesce($2, timezone), goal = coalesce($3, goal) WHERE owner_sub = $1",
+    )
+    .bind(owner)
+    .bind(&a.timezone)
+    .bind(a.goal.map(Goal::as_str))
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     settings_get(app, owner).await
 }
@@ -282,7 +314,8 @@ pub struct EquipmentItem {
     /// What this kind of equipment is, the same at every gym ("45° plate-loaded leg press").
     pub description: Option<String>,
     pub quantity: Option<i32>,
-    /// For free weights: the weights on the rack, e.g. [2, 4, 6, …, 40].
+    /// For fixed-weight implements (dumbbells, kettlebells): the weights on the rack, e.g. [2, 4, 6, …, 40].
+    /// Not plates: logged barbell weights are totals and would be flagged.
     pub available_weights_kg: Option<Vec<f64>>,
     /// For machines: the heaviest setting.
     pub max_load_kg: Option<f64>,

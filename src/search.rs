@@ -61,25 +61,29 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
          stats AS (SELECT exercise_id, max(performed_at) AS last_done,
                           count(*) FILTER (WHERE performed_at >= now() - interval '30 days') AS sets_30d
                    FROM mine GROUP BY exercise_id),
-         last_top AS (
-            SELECT DISTINCT ON (s.exercise_id) s.exercise_id,
-                   json_build_object('weight_kg', s.weight_kg, 'reps', s.reps, 'duration_s', s.duration_s, 'performed_at', s.performed_at) AS top
+         last_session AS (
+            SELECT s.exercise_id,
+                   json_build_object(
+                       'date', min(s.performed_at)::date,
+                       'sets', json_agg(json_build_object('reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
+                                                          'rpe', s.rpe, 'rest_s', s.rest_s) ORDER BY s.performed_at)) AS last
             FROM mine s
             WHERE s.workout_id = (SELECT m.workout_id FROM mine m WHERE m.exercise_id = s.exercise_id ORDER BY m.performed_at DESC LIMIT 1)
-            ORDER BY s.exercise_id, s.weight_kg DESC NULLS LAST, s.reps DESC NULLS LAST)
+            GROUP BY s.exercise_id)
          SELECT json_build_object(
             'gym', (SELECT json_build_object('id', id, 'name', name, 'inventory_complete', inventory_complete) FROM gym WHERE id = $2),
             'today', current_date,
+            'goal', (SELECT goal FROM user_settings WHERE owner_sub = $1),
             'exercises', coalesce((
                 SELECT json_agg(json_build_object(
                     'id', e.id, 'name', e.name, 'muscle_groups', e.muscle_groups, 'availability', av.availability,
                     'unknown_equipment', NULLIF(av.unknown_equipment, '{{}}'),
                     'last_done', st.last_done, 'days_since', current_date - st.last_done::date,
-                    'last_top_set', lt.top, 'sets_last_30d', coalesce(st.sets_30d, 0))
+                    'last_session', ls.last, 'sets_last_30d', coalesce(st.sets_30d, 0))
                     ORDER BY av.availability, st.last_done NULLS FIRST)
                 FROM exercise e JOIN avail av ON av.exercise_id = e.id
                 LEFT JOIN stats st ON st.exercise_id = e.id
-                LEFT JOIN last_top lt ON lt.exercise_id = e.id
+                LEFT JOIN last_session ls ON ls.exercise_id = e.id
                 WHERE av.availability <> 'unavailable'), '[]'::json),
             'days_since_muscle_group', (
                 SELECT json_object_agg(mg, (SELECT current_date - max(s.performed_at)::date
@@ -201,6 +205,7 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
     let mut q: QueryBuilder<Postgres> = QueryBuilder::new(format!(
         "SELECT json_build_object('set_id', s.id, 'workout_id', w.id, 'gym', g.name, 'exercise', e.name,
                 'performed_at', s.performed_at, 'reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
+                'rpe', s.rpe, 'rest_s', s.rest_s,
                 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
          FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN gym g ON g.id = w.gym_id
          JOIN exercise e ON e.id = s.exercise_id

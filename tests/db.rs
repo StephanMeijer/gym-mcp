@@ -441,3 +441,94 @@ async fn equipment_has_a_description_separate_from_gym_notes(pool: PgPool) {
         .unwrap();
     assert_eq!(ex[0]["description"], "hands under shoulders, chest to floor");
 }
+
+#[sqlx::test]
+async fn effort_rest_goal_and_rack_warnings_feed_recommendations(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    let s = setup::settings_update(&app, ME, a(json!({"goal": "hypertrophy"})))
+        .await
+        .unwrap();
+    assert_eq!(s["goal"], "hypertrophy");
+    assert_eq!(s["timezone"], "Europe/Amsterdam", "goal-only update keeps the timezone");
+    assert!(user_msg(setup::settings_update(&app, ME, a(json!({}))).await).contains("timezone and/or goal"));
+
+    workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    // 13 kg isn't on NDSM's dumbbell rack (2..14 in steps of 2): logged, with one warning.
+    let r = workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "dumbbell bench press", "sets": [
+            {"reps": 10, "weight_kg": 12, "rpe": 7, "rest_s": 90},
+            {"reps": 8, "weight_kg": 13, "rpe": 8.5},
+            {"reps": 8, "weight_kg": 13, "rpe": 9}
+        ]})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r["added"], 3);
+    let warnings = r["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .contains("13 kg isn't among Trainmore NDSM's recorded dumbbells weights")
+    );
+    let first = &r["workout"]["exercises"][0]["sets"][0];
+    assert_eq!((first["rpe"].as_f64(), first["rest_s"].as_i64()), (Some(7.0), Some(90)));
+
+    let r = workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "leg press", "sets": [{"reps": 5, "weight_kg": 320}]})),
+    )
+    .await
+    .unwrap();
+    assert!(
+        r["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("above Trainmore NDSM's recorded leg press max of 300 kg")
+    );
+
+    for bad in [json!(11), json!(7.3), json!(0)] {
+        let msg = user_msg(
+            workout::set_add(
+                &app,
+                ME,
+                a(json!({"exercise": "push-up", "sets": [{"reps": 5, "rpe": bad}]})),
+            )
+            .await,
+        );
+        assert!(msg.contains("invalid value"), "rpe {bad}: {msg}");
+    }
+
+    let set_id = first["set_id"].as_i64().unwrap();
+    let w = workout::set_update(&app, ME, a(json!({"set_id": set_id, "rpe": 6.5})))
+        .await
+        .unwrap();
+    assert_eq!(w["exercises"][0]["sets"][0]["rpe"], 6.5);
+    assert_eq!(w["exercises"][0]["sets"][0]["rest_s"], 90, "unset fields stay");
+
+    let o = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
+    assert_eq!(o["overview"]["goal"], "hypertrophy");
+    let bench = o["overview"]["exercises"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "Dumbbell bench press")
+        .unwrap();
+    let last: Vec<_> = bench["last_session"]["sets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["rpe"].as_f64().unwrap())
+        .collect();
+    assert_eq!(last, [6.5, 8.5, 9.0]);
+
+    let hard = search::set_search(&app, ME, a(json!({"exercise": "dumbbell bench press", "limit": 1})))
+        .await
+        .unwrap();
+    assert_eq!(hard[0]["rpe"], 9.0);
+}
