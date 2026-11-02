@@ -57,19 +57,30 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
         .ok_or_else(|| user_err("no open workout; pass a gym"))?;
     let groups: Vec<String> = MUSCLE_GROUPS.iter().map(|s| s.to_string()).collect();
     let v: Value = sqlx::query_scalar(
-        "WITH mine AS (SELECT s.* FROM workout_set s JOIN workout w ON w.id = s.workout_id WHERE w.owner_sub = $1),
+        "WITH mine AS (SELECT s.*, w.gym_id FROM workout_set s JOIN workout w ON w.id = s.workout_id WHERE w.owner_sub = $1),
          stats AS (SELECT exercise_id, max(performed_at) AS last_done,
                           count(*) FILTER (WHERE performed_at >= now() - interval '30 days') AS sets_30d
                    FROM mine GROUP BY exercise_id),
+         -- the machine last used for each exercise at this gym
+         here AS (SELECT DISTINCT ON (exercise_id) exercise_id, machine FROM mine
+                  WHERE gym_id = $2 AND machine IS NOT NULL ORDER BY exercise_id, performed_at DESC),
+         -- the last session on that machine at any gym (same brand compares across gyms), else the last session
+         picked AS (
+            SELECT s.* FROM mine s LEFT JOIN here h ON h.exercise_id = s.exercise_id
+            WHERE (h.machine IS NULL OR lower(s.machine) = lower(h.machine))
+              AND s.workout_id = (SELECT m.workout_id FROM mine m
+                                  WHERE m.exercise_id = s.exercise_id AND (h.machine IS NULL OR lower(m.machine) = lower(h.machine))
+                                  ORDER BY m.performed_at DESC LIMIT 1)),
          last_session AS (
             SELECT s.exercise_id,
                    json_build_object(
                        'date', min(s.performed_at)::date,
+                       'gym', (SELECT name FROM gym WHERE id = min(s.gym_id)),
                        'sets', json_agg(json_build_object('reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
                                                           'rpe', s.rpe, 'rest_s', s.rest_s, 'distance_m', s.distance_m,
-                                                          'intensity', NULLIF(s.intensity, '')) ORDER BY s.performed_at)) AS last
-            FROM mine s
-            WHERE s.workout_id = (SELECT m.workout_id FROM mine m WHERE m.exercise_id = s.exercise_id ORDER BY m.performed_at DESC LIMIT 1)
+                                                          'intensity', NULLIF(s.intensity, ''), 'machine', s.machine)
+                                                          ORDER BY s.performed_at)) AS last
+            FROM picked s
             GROUP BY s.exercise_id)
          SELECT json_build_object(
             'gym', (SELECT json_build_object('id', id, 'name', name, 'equipment', NULLIF(equipment, '')) FROM gym WHERE id = $2),
@@ -80,11 +91,13 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                     'id', e.id, 'name', e.name, 'kind', e.kind, 'muscle_groups', e.muscle_groups,
                     'secondary_muscle_groups', e.secondary_muscle_groups,
                     'equipment', NULLIF(e.equipment, ''), 'last_done', st.last_done, 'days_since', current_date - st.last_done::date,
-                    'last_session', ls.last, 'sets_last_30d', coalesce(st.sets_30d, 0))
+                    'machine_here', h.machine, 'last_session', ls.last,
+                    'machines_used', (SELECT array_agg(DISTINCT machine) FROM mine WHERE exercise_id = e.id AND machine IS NOT NULL), 'sets_last_30d', coalesce(st.sets_30d, 0))
                     ORDER BY st.last_done NULLS FIRST, e.name)
                 FROM exercise e
                 LEFT JOIN stats st ON st.exercise_id = e.id
                 LEFT JOIN last_session ls ON ls.exercise_id = e.id
+                LEFT JOIN here h ON h.exercise_id = e.id
                 WHERE e.owner_sub = $1), '[]'::json),
             'days_since_muscle_group', (
                 SELECT json_object_agg(mg, (SELECT current_date - max(s.performed_at)::date
@@ -196,6 +209,8 @@ pub struct SetSearchArgs {
     pub muscle_group: Option<String>,
     /// Only exercises whose equipment text contains this, e.g. "dumbbell".
     pub equipment: Option<String>,
+    /// Only sets on a machine whose name contains this, e.g. "technogym".
+    pub machine: Option<String>,
     pub gym: Option<String>,
     /// Inclusive. RFC 3339 or a local date/time ("2026-10-01").
     pub from: Option<String>,
@@ -222,7 +237,7 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
         "SELECT json_build_object('set_id', s.id, 'workout_id', w.id, 'gym', g.name, 'exercise', e.name,
                 'performed_at', s.performed_at, 'reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
                 'rpe', s.rpe, 'rest_s', s.rest_s, 'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
-                'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
+                'machine', s.machine, 'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
          FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN gym g ON g.id = w.gym_id
          JOIN exercise e ON e.id = s.exercise_id
          WHERE w.owner_sub = "
@@ -237,6 +252,11 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
     if let Some(eq) = &a.equipment {
         q.push(" AND e.equipment ILIKE '%' || ")
             .push_bind(eq.clone())
+            .push(" || '%'");
+    }
+    if let Some(m) = &a.machine {
+        q.push(" AND s.machine ILIKE '%' || ")
+            .push_bind(m.clone())
             .push(" || '%'");
     }
     if let Some(id) = gym {
@@ -320,6 +340,8 @@ pub struct ProgressArgs {
     /// Matches primary muscles. Coarse names work too: back, shoulders, legs, arms.
     pub muscle_group: Option<String>,
     pub metric: Metric,
+    /// Only sets on a machine whose name contains this. With an exercise, points are already split per machine.
+    pub machine: Option<String>,
     /// Default week (ISO, Monday start, local time).
     #[serde(default)]
     pub bucket: Bucket,
@@ -349,16 +371,29 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
         Bucket::Week => "week",
         Bucket::Month => "month",
     };
+    // One exercise: a point per machine, since machine weights don't compare across brands.
+    let machine = if exercise.is_some() {
+        "min(s.machine)"
+    } else {
+        "NULL::text"
+    };
+    let machine_key = if exercise.is_some() {
+        "lower(s.machine)"
+    } else {
+        "NULL::text"
+    };
     let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
-        "SELECT coalesce(json_agg(json_build_object('period_start', b, 'value', v) ORDER BY b), '[]'::json) FROM (
-            SELECT date_trunc($2, s.performed_at)::date AS b, {metric} AS v
+        "SELECT coalesce(json_agg(json_build_object('period_start', b, 'machine', machine, 'value', v)
+                                  ORDER BY machine_key NULLS FIRST, b), '[]'::json) FROM (
+            SELECT date_trunc($2, s.performed_at)::date AS b, {machine_key} AS machine_key, {machine} AS machine, {metric} AS v
             FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN exercise e ON e.id = s.exercise_id
             WHERE w.owner_sub = $1
               AND ($3::bigint IS NULL OR s.exercise_id = $3)
               AND ($4::text[] IS NULL OR e.muscle_groups && $4)
               AND ($5::timestamptz IS NULL OR s.performed_at >= $5::timestamptz)
               AND ($6::timestamptz IS NULL OR s.performed_at < $6::timestamptz)
-            GROUP BY 1) x"
+              AND ($7::text IS NULL OR s.machine ILIKE '%' || $7 || '%')
+            GROUP BY 1, 2) x"
     )))
     .bind(owner)
     .bind(bucket)
@@ -366,6 +401,7 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
     .bind(&groups)
     .bind(&a.from)
     .bind(&a.to)
+    .bind(&a.machine)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -385,53 +421,54 @@ pub async fn personal_records(app: &App, owner: &str, a: RecordsArgs) -> AppResu
     let exercise = opt_id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
         "WITH mine AS (
-            SELECT s.* FROM workout_set s JOIN workout w ON w.id = s.workout_id
+            -- records are per machine (stack weights don't compare across brands); '' = unknown machine
+            SELECT s.*, coalesce(lower(s.machine), '') AS machine_key FROM workout_set s JOIN workout w ON w.id = s.workout_id
             WHERE w.owner_sub = $1 AND ($2::bigint IS NULL OR s.exercise_id = $2)),
          heaviest AS (
-            SELECT DISTINCT ON (exercise_id) exercise_id,
+            SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
                    json_build_object('weight_kg', weight_kg, 'reps', reps, 'performed_at', performed_at, 'set_id', id) AS r
-            FROM mine WHERE weight_kg IS NOT NULL ORDER BY exercise_id, weight_kg DESC, reps DESC NULLS LAST, performed_at),
+            FROM mine WHERE weight_kg IS NOT NULL ORDER BY exercise_id, machine_key, weight_kg DESC, reps DESC NULLS LAST, performed_at),
          best_e1rm AS (
-            SELECT DISTINCT ON (exercise_id) exercise_id,
+            SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
                    json_build_object('e1rm_kg', round({E1RM}::numeric, 1), 'weight_kg', weight_kg, 'reps', reps,
                                      'performed_at', performed_at, 'set_id', id) AS r
-            FROM mine s WHERE weight_kg IS NOT NULL AND reps > 0 ORDER BY exercise_id, {E1RM} DESC, performed_at),
+            FROM mine s WHERE weight_kg IS NOT NULL AND reps > 0 ORDER BY exercise_id, machine_key, {E1RM} DESC, performed_at),
          reps_at AS (
-            SELECT exercise_id, json_object_agg(weight_kg, best ORDER BY weight_kg) AS r
-            FROM (SELECT exercise_id, weight_kg, max(reps) AS best FROM mine WHERE weight_kg IS NOT NULL AND reps IS NOT NULL
-                  GROUP BY exercise_id, weight_kg) t GROUP BY exercise_id),
+            SELECT exercise_id, machine_key, json_object_agg(weight_kg, best ORDER BY weight_kg) AS r
+            FROM (SELECT exercise_id, machine_key, weight_kg, max(reps) AS best FROM mine WHERE weight_kg IS NOT NULL AND reps IS NOT NULL
+                  GROUP BY exercise_id, machine_key, weight_kg) t GROUP BY exercise_id, machine_key),
          vol AS (
-            SELECT DISTINCT ON (exercise_id) exercise_id,
+            SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
                    json_build_object('volume_kg', v, 'workout_id', workout_id, 'date', d) AS r
-            FROM (SELECT exercise_id, workout_id, sum({VOLUME}) AS v, min(performed_at)::date AS d FROM mine s
-                  GROUP BY exercise_id, workout_id) t
-            WHERE v IS NOT NULL ORDER BY exercise_id, v DESC),
+            FROM (SELECT exercise_id, machine_key, workout_id, sum({VOLUME}) AS v, min(performed_at)::date AS d FROM mine s
+                  GROUP BY exercise_id, machine_key, workout_id) t
+            WHERE v IS NOT NULL ORDER BY exercise_id, machine_key, v DESC),
          longest_distance AS (
-            SELECT DISTINCT ON (exercise_id) exercise_id,
+            SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
                    json_build_object('distance_m', distance_m, 'duration_s', duration_s, 'performed_at', performed_at, 'set_id', id) AS r
-            FROM mine WHERE distance_m > 0 ORDER BY exercise_id, distance_m DESC, performed_at),
+            FROM mine WHERE distance_m > 0 ORDER BY exercise_id, machine_key, distance_m DESC, performed_at),
          best_pace AS (
-            SELECT DISTINCT ON (exercise_id) exercise_id,
+            SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
                    json_build_object('pace_s_per_km', round({PACE}::numeric), 'distance_m', distance_m, 'duration_s', duration_s,
                                      'performed_at', performed_at, 'set_id', id) AS r
-            FROM mine s WHERE distance_m > 0 AND duration_s > 0 ORDER BY exercise_id, {PACE}, performed_at),
+            FROM mine s WHERE distance_m > 0 AND duration_s > 0 ORDER BY exercise_id, machine_key, {PACE}, performed_at),
          longest_duration AS (
-            SELECT DISTINCT ON (exercise_id) exercise_id,
+            SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
                    json_build_object('duration_s', duration_s, 'performed_at', performed_at, 'set_id', id) AS r
-            FROM mine WHERE duration_s > 0 ORDER BY exercise_id, duration_s DESC, performed_at)
+            FROM mine WHERE duration_s > 0 ORDER BY exercise_id, machine_key, duration_s DESC, performed_at)
          SELECT coalesce(json_agg(json_build_object(
-                    'exercise', e.name, 'heaviest_set', h.r, 'best_e1rm', b.r,
+                    'exercise', e.name, 'machine', m.machine, 'heaviest_set', h.r, 'best_e1rm', b.r,
                     'max_reps_by_weight_kg', ra.r, 'best_volume_workout', vo.r,
-                    'longest_distance', ld.r, 'best_pace', bp.r, 'longest_duration', lu.r) ORDER BY e.name), '[]'::json)
+                    'longest_distance', ld.r, 'best_pace', bp.r, 'longest_duration', lu.r) ORDER BY e.name, m.machine_key), '[]'::json)
          FROM exercise e
-         JOIN (SELECT DISTINCT exercise_id FROM mine) m ON m.exercise_id = e.id
-         LEFT JOIN heaviest h ON h.exercise_id = e.id
-         LEFT JOIN best_e1rm b ON b.exercise_id = e.id
-         LEFT JOIN reps_at ra ON ra.exercise_id = e.id
-         LEFT JOIN vol vo ON vo.exercise_id = e.id
-         LEFT JOIN longest_distance ld ON ld.exercise_id = e.id
-         LEFT JOIN best_pace bp ON bp.exercise_id = e.id
-         LEFT JOIN longest_duration lu ON lu.exercise_id = e.id"
+         JOIN (SELECT exercise_id, machine_key, min(machine) AS machine FROM mine GROUP BY exercise_id, machine_key) m ON m.exercise_id = e.id
+         LEFT JOIN heaviest h ON h.exercise_id = e.id AND h.machine_key = m.machine_key
+         LEFT JOIN best_e1rm b ON b.exercise_id = e.id AND b.machine_key = m.machine_key
+         LEFT JOIN reps_at ra ON ra.exercise_id = e.id AND ra.machine_key = m.machine_key
+         LEFT JOIN vol vo ON vo.exercise_id = e.id AND vo.machine_key = m.machine_key
+         LEFT JOIN longest_distance ld ON ld.exercise_id = e.id AND ld.machine_key = m.machine_key
+         LEFT JOIN best_pace bp ON bp.exercise_id = e.id AND bp.machine_key = m.machine_key
+         LEFT JOIN longest_duration lu ON lu.exercise_id = e.id AND lu.machine_key = m.machine_key"
     )))
     .bind(owner)
     .bind(exercise)
