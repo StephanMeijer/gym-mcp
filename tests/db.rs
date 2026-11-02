@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, DurationRound, Utc};
 use gym_mcp::db::{App, AppError};
 use gym_mcp::{measurement, search, setup, workout};
 use serde::de::DeserializeOwned;
@@ -1712,4 +1712,84 @@ async fn cardio_metrics_round_trip(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(w["exercises"][0]["sets"][1]["calories"], 90);
+}
+
+#[sqlx::test]
+async fn shift_sets_moves_workout_with_its_sets(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    let start = (Utc::now() - chrono::Duration::days(3))
+        .duration_trunc(chrono::Duration::minutes(1))
+        .unwrap();
+    let at = |m: i64| (start + chrono::Duration::minutes(m)).to_rfc3339();
+    let w = workout::add_past(
+        &app,
+        ME,
+        a(json!({"gym": "ndsm", "started_at": at(0), "finished_at": at(60)})),
+    )
+    .await
+    .unwrap();
+    let id = w["workout_id"].clone();
+    workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "leg press", "workout_id": id,
+                 "sets": [{"reps": 10, "weight_kg": 100, "performed_at": at(10)},
+                          {"reps": 10, "weight_kg": 100, "performed_at": at(25)}]})),
+    )
+    .await
+    .unwrap();
+    let times = |w: &Value| -> Vec<DateTime<Utc>> {
+        w["exercises"][0]["sets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| serde_json::from_value(s["performed_at"].clone()).unwrap())
+            .collect()
+    };
+    let ts = |v: &Value| -> DateTime<Utc> { serde_json::from_value(v.clone()).unwrap() };
+
+    // Without the flag, the first set would fall before the new start.
+    let msg = user_msg(workout::update(&app, ME, a(json!({"workout_id": id, "started_at": at(15)}))).await);
+    assert!(msg.contains("adjust those sets first"), "{msg}");
+    let msg = user_msg(workout::update(&app, ME, a(json!({"workout_id": id, "shift_sets": true}))).await);
+    assert!(msg.contains("needs started_at"), "{msg}");
+
+    let moved = workout::update(
+        &app,
+        ME,
+        a(json!({"workout_id": id, "started_at": at(120), "shift_sets": true})),
+    )
+    .await
+    .unwrap();
+    let m = |x: i64| start + chrono::Duration::minutes(x);
+    assert_eq!(times(&moved), [m(130), m(145)]);
+    assert_eq!(ts(&moved["started_at"]), m(120));
+    assert_eq!(ts(&moved["finished_at"]), m(180));
+
+    // An explicit finish before the shifted sets is rejected, and nothing moves.
+    let msg = user_msg(
+        workout::update(
+            &app,
+            ME,
+            a(json!({"workout_id": id, "started_at": at(0), "finished_at": at(5), "shift_sets": true})),
+        )
+        .await,
+    );
+    assert!(msg.contains("outside"), "{msg}");
+    let msg = user_msg(
+        workout::update(
+            &app,
+            ME,
+            a(
+                json!({"workout_id": id, "started_at": (Utc::now() - chrono::Duration::minutes(1)).to_rfc3339(),
+                     "shift_sets": true}),
+            ),
+        )
+        .await,
+    );
+    assert!(msg.contains("future"), "{msg}");
+    let w = workout::update(&app, ME, a(json!({"workout_id": id}))).await.unwrap();
+    assert_eq!(times(&w), [m(130), m(145)]);
+    assert_eq!(ts(&w["finished_at"]), m(180));
 }

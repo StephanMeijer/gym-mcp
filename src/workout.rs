@@ -314,6 +314,10 @@ pub struct UpdateArgs {
     /// Move the workout to another gym (name, alias, or id).
     pub gym: Option<String>,
     pub notes: Option<String>,
+    /// Move every set by the same offset as started_at, keeping their spacing ("the whole session was an hour
+    /// later"). The finish moves too, unless finished_at is given.
+    #[serde(default)]
+    pub shift_sets: bool,
 }
 
 pub async fn update(app: &App, owner: &str, a: UpdateArgs) -> AppResult<Value> {
@@ -327,13 +331,32 @@ pub async fn update(app: &App, owner: &str, a: UpdateArgs) -> AppResult<Value> {
         Some(s) => Some(parse_time(&mut tx, s).await?),
         None => None,
     };
-    let finished = match &a.finished_at {
+    let mut finished = match &a.finished_at {
         Some(s) => Some(parse_time(&mut tx, s).await?),
         None => None,
     };
     let now = now(&mut tx).await?;
     for t in started.iter().chain(&finished) {
         not_future(*t, now)?;
+    }
+    if a.shift_sets {
+        let new_start = started.ok_or_else(|| user_err("shift_sets needs started_at"))?;
+        let t = target(&mut tx, owner, a.workout_id).await?;
+        let offset = new_start - t.started_at;
+        let last: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "WITH moved AS (UPDATE workout_set SET performed_at = performed_at + $2, updated_at = now()
+                            WHERE workout_id = $1 RETURNING performed_at)
+             SELECT max(performed_at) FROM moved",
+        )
+        .bind(a.workout_id)
+        .bind(offset)
+        .fetch_one(&mut *tx)
+        .await?;
+        if let Some(last) = last {
+            not_future(last, now)?;
+        }
+        // An open workout stays open; an explicit finished_at wins.
+        finished = finished.or(t.finished_at.map(|f| f + offset));
     }
     sqlx::query(
         "UPDATE workout SET
