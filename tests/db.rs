@@ -25,6 +25,20 @@ fn hours_ago(h: i64) -> String {
     (Utc::now() - chrono::Duration::hours(h)).to_rfc3339()
 }
 
+/// Finds a muscle group's row in a `muscle_groups` array.
+trait GroupRow {
+    fn group(&self, g: &str) -> &Value;
+}
+
+impl GroupRow for Value {
+    fn group(&self, g: &str) -> &Value {
+        let rows = self.as_array().unwrap_or_else(|| panic!("not rows: {self}"));
+        rows.iter()
+            .find(|r| r["muscle_group"] == g)
+            .unwrap_or_else(|| panic!("no row for {g}"))
+    }
+}
+
 fn user_msg(r: Result<Value, AppError>) -> String {
     match r {
         Err(AppError::User(m)) => m,
@@ -274,6 +288,11 @@ async fn search_records_and_overview(pool: PgPool) {
     assert_eq!(pr[0]["heaviest_set"]["weight_kg"], 140.0);
     assert_eq!(pr[0]["best_e1rm"]["weight_kg"], 140.0); // 140*(1+8/30)=177.3 > 120*(1+10/30)=160
     assert_eq!(pr[0]["best_volume_workout"]["volume_kg"], 3520.0);
+    let reps = pr[0]["max_reps_by_weight_kg"].as_array().unwrap();
+    let weights: Vec<f64> = reps.iter().map(|r| r["weight_kg"].as_f64().unwrap()).collect();
+    assert!(weights.is_sorted(), "sorted by weight: {weights:?}");
+    let at140 = reps.iter().find(|r| r["weight_kg"] == 140.0).unwrap();
+    assert_eq!(at140["reps"], 8);
 
     let hits = search::search(&app, ME, a(json!({"query": "seat position"})))
         .await
@@ -289,8 +308,11 @@ async fn search_records_and_overview(pool: PgPool) {
     );
 
     let o = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
-    assert_eq!(o["overview"]["muscle_groups"]["quads"]["days_since"], 0);
-    assert!(o["overview"]["muscle_groups"]["chest"]["days_since"].is_null());
+    assert_eq!(o["overview"]["muscle_groups"].group("quads")["days_since"], 0);
+    assert!(o["overview"]["muscle_groups"].group("chest")["days_since"].is_null());
+    let rows = o["overview"]["muscle_groups"].as_array().unwrap();
+    let names: Vec<&str> = rows.iter().map(|r| r["muscle_group"].as_str().unwrap()).collect();
+    assert_eq!(names, setup::MUSCLE_GROUPS, "every group, in a stable order");
     assert_eq!(o["overview"]["done_today"][0]["sets"], 3);
 
     let alt = search::exercise_alternatives(&app, ME, a(json!({"exercise": "push-up"})))
@@ -663,9 +685,9 @@ async fn muscle_groups_primary_secondary_and_aliases(pool: PgPool) {
 
     let ov = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
     let groups = &ov["overview"]["muscle_groups"];
-    assert_eq!(groups["chest"]["days_since"], 0);
+    assert_eq!(groups.group("chest")["days_since"], 0);
     assert!(
-        groups["triceps"]["days_since"].is_null(),
+        groups.group("triceps")["days_since"].is_null(),
         "secondary doesn't count: {groups}"
     );
     assert!(groups.get("back").is_none() && groups.get("cardio").is_none());
@@ -925,20 +947,20 @@ async fn muscle_group_volume_in_overview(pool: PgPool) {
 
     let ov = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
     let g = &ov["overview"]["muscle_groups"];
-    assert_eq!(g["chest"]["days_since"], 0);
-    assert_eq!(g["chest"]["sets_7d"], 2.0);
-    assert_eq!(g["chest"]["sets_28d"], 3.0);
-    assert_eq!(g["chest"]["train_days_28d"], 2);
-    assert_eq!(g["chest"]["avg_rpe_28d"], 7.5, "the set without rpe is ignored");
-    assert_eq!(g["triceps"]["sets_7d"], 1.0, "secondary counts half");
-    assert_eq!(g["triceps"]["sets_28d"], 1.5);
-    assert!(g["triceps"]["days_since"].is_null(), "secondary only");
-    assert_eq!(g["triceps"]["train_days_28d"], 0);
-    assert_eq!(g["quads"]["sets_28d"], 0.0, "cardio doesn't count");
-    assert!(g["calves"]["days_since"].is_null());
-    assert_eq!(g["calves"]["sets_7d"], 0.0);
-    assert!(g["calves"]["avg_rpe_28d"].is_null());
-    assert_eq!(g.as_object().unwrap().len(), setup::MUSCLE_GROUPS.len());
+    assert_eq!(g.group("chest")["days_since"], 0);
+    assert_eq!(g.group("chest")["sets_7d"], 2.0);
+    assert_eq!(g.group("chest")["sets_28d"], 3.0);
+    assert_eq!(g.group("chest")["train_days_28d"], 2);
+    assert_eq!(g.group("chest")["avg_rpe_28d"], 7.5, "the set without rpe is ignored");
+    assert_eq!(g.group("triceps")["sets_7d"], 1.0, "secondary counts half");
+    assert_eq!(g.group("triceps")["sets_28d"], 1.5);
+    assert!(g.group("triceps")["days_since"].is_null(), "secondary only");
+    assert_eq!(g.group("triceps")["train_days_28d"], 0);
+    assert_eq!(g.group("quads")["sets_28d"], 0.0, "cardio doesn't count");
+    assert!(g.group("calves")["days_since"].is_null());
+    assert_eq!(g.group("calves")["sets_7d"], 0.0);
+    assert!(g.group("calves")["avg_rpe_28d"].is_null());
+    assert_eq!(g.as_array().unwrap().len(), setup::MUSCLE_GROUPS.len());
 }
 
 #[sqlx::test]
@@ -982,7 +1004,7 @@ async fn muscle_group_volume_over_any_period(pool: PgPool) {
 
     let vol = |args: Value| search::muscle_group_volume(&app, ME, a(args));
     let d14 = vol(json!({"days": 14})).await.unwrap();
-    let chest = &d14["muscle_groups"]["chest"];
+    let chest = &d14["muscle_groups"].group("chest");
     assert_eq!(d14["days"], 14.0);
     assert_eq!(chest["sets"], 3.0);
     assert_eq!(chest["sets_per_week"], 1.5);
@@ -990,34 +1012,34 @@ async fn muscle_group_volume_over_any_period(pool: PgPool) {
         chest["from_exercises"],
         json!([{"exercise": "Barbell bench press", "sets": 3.0}])
     );
-    assert_eq!(d14["muscle_groups"]["triceps"]["sets"], 1.5);
-    assert_eq!(d14["muscle_groups"]["calves"]["from_exercises"], json!([]));
+    assert_eq!(d14["muscle_groups"].group("triceps")["sets"], 1.5);
+    assert_eq!(d14["muscle_groups"].group("calves")["from_exercises"], json!([]));
 
     let ranged =
         vol(json!({"from": (Utc::now() - chrono::Duration::days(14)).to_rfc3339(), "to": Utc::now().to_rfc3339()}))
             .await
             .unwrap();
-    assert_eq!(ranged["muscle_groups"]["chest"]["sets"], 3.0);
+    assert_eq!(ranged["muscle_groups"].group("chest")["sets"], 3.0);
 
     // A period that ends before today's sets: only the old set, but days_since is all-time.
     let old = vol(json!({"from": (Utc::now() - chrono::Duration::days(14)).to_rfc3339(),
                          "to": (Utc::now() - chrono::Duration::days(5)).to_rfc3339()}))
     .await
     .unwrap();
-    assert_eq!(old["muscle_groups"]["chest"]["sets"], 1.0);
-    assert_eq!(old["muscle_groups"]["chest"]["avg_rpe"], 7.0);
-    assert_eq!(old["muscle_groups"]["chest"]["days_since"], 0);
+    assert_eq!(old["muscle_groups"].group("chest")["sets"], 1.0);
+    assert_eq!(old["muscle_groups"].group("chest")["avg_rpe"], 7.0);
+    assert_eq!(old["muscle_groups"].group("chest")["days_since"], 0);
 
     // The overview uses the same numbers.
     let ov = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
-    let og = &ov["overview"]["muscle_groups"]["chest"];
+    let og = &ov["overview"]["muscle_groups"].group("chest");
     let d7 = vol(json!({})).await.unwrap();
     let d28 = vol(json!({"days": 28})).await.unwrap();
-    assert_eq!(og["sets_7d"], d7["muscle_groups"]["chest"]["sets"]);
-    assert_eq!(og["sets_28d"], d28["muscle_groups"]["chest"]["sets"]);
-    assert_eq!(og["train_days_28d"], d28["muscle_groups"]["chest"]["train_days"]);
-    assert_eq!(og["avg_rpe_28d"], d28["muscle_groups"]["chest"]["avg_rpe"]);
-    assert_eq!(d7["muscle_groups"]["chest"]["sets"], 2.0);
+    assert_eq!(og["sets_7d"], d7["muscle_groups"].group("chest")["sets"]);
+    assert_eq!(og["sets_28d"], d28["muscle_groups"].group("chest")["sets"]);
+    assert_eq!(og["train_days_28d"], d28["muscle_groups"].group("chest")["train_days"]);
+    assert_eq!(og["avg_rpe_28d"], d28["muscle_groups"].group("chest")["avg_rpe"]);
+    assert_eq!(d7["muscle_groups"].group("chest")["sets"], 2.0);
 
     for (args, msg) in [
         (json!({"days": 7, "from": "2026-10-01"}), "not both"),
@@ -1266,7 +1288,8 @@ async fn only_working_sets_count(pool: PgPool) {
     let quads = |app: App| async move {
         search::muscle_group_volume(&app, ME, a(json!({"days": 7})))
             .await
-            .unwrap()["muscle_groups"]["quads"]["sets"]
+            .unwrap()["muscle_groups"]
+            .group("quads")["sets"]
             .clone()
     };
     let heaviest = |app: App| async move {
@@ -1290,7 +1313,7 @@ async fn only_working_sets_count(pool: PgPool) {
         .unwrap();
     assert_eq!(lp["last_session"]["sets"].as_array().unwrap().len(), 2);
     assert_eq!(ov["overview"]["done_today"][0]["sets"], 2);
-    assert_eq!(ov["overview"]["muscle_groups"]["quads"]["sets_7d"], 2.0);
+    assert_eq!(ov["overview"]["muscle_groups"].group("quads")["sets_7d"], 2.0);
 
     let warmups = search::set_search(&app, ME, a(json!({"set_type": "warmup"})))
         .await
@@ -1332,7 +1355,8 @@ async fn unilateral_counts_per_side(pool: PgPool) {
     let chest = |app: App| async move {
         search::muscle_group_volume(&app, ME, a(json!({"days": 7})))
             .await
-            .unwrap()["muscle_groups"]["chest"]["sets"]
+            .unwrap()["muscle_groups"]
+            .group("chest")["sets"]
             .clone()
     };
     let add = |app: App, extra: Value| async move {
@@ -1379,7 +1403,7 @@ async fn unilateral_counts_per_side(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(pr[0]["heaviest_set"]["weight_kg"], 20.0);
-    assert_eq!(pr[0]["max_reps_by_weight_kg"], json!({"20": 10}));
+    assert_eq!(pr[0]["max_reps_by_weight_kg"], json!([{"weight_kg": 20, "reps": 10}]));
 
     let sets = added["workout"]["exercises"][0]["sets"].as_array().unwrap();
     // load_basis only means something on a unilateral set.

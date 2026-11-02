@@ -34,7 +34,7 @@ equipment_append (use equipment only to rewrite the whole text): what it is, how
 Muscle groups: muscle_groups = the target (primary) muscles, secondary_muscle_groups = the ones that assist (bench press: chest; secondary triceps, front_delts). Filters accept the coarse names back, shoulders, legs and arms; exercises store the specific ones.
 Descriptions: when creating exercises, add a short description (what it looks like, how it's set up) so it can be \
 recognized from a photo later.
-Muscle balance: training_overview.muscle_groups has per muscle days_since (primary only), sets_7d / sets_28d \
+Muscle balance: training_overview.muscle_groups has a row per muscle: muscle_group, days_since (primary only), sets_7d / sets_28d \
 (weighted: primary 1, secondary 0.5; strength only), train_days_28d and avg_rpe_28d. Rule of thumb for hypertrophy: \
 ~10-20 sets per muscle per week, trained 2+ times a week; for strength, fewer and heavier sets. Point out muscles well \
 below that or not trained in 14+ days; the judgement is yours.
@@ -452,7 +452,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Per muscle group over a period (default the last 7 days, or days / from-to): weighted sets (primary 1, secondary 0.5), sets per week, training days, average RPE, days since, and the exercises behind it.",
+        description = "One row per muscle group over a period (default the last 7 days, or days / from-to): weighted sets (primary 1, secondary 0.5), sets per week, training days, average RPE, days since, and the exercises behind it.",
         annotations(
             title = "Muscle volume over a period",
             read_only_hint = true,
