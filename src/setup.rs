@@ -60,7 +60,7 @@ fn check_muscle_groups(groups: &[String]) -> AppResult<()> {
 // ---------- settings ----------
 
 pub async fn settings_get(app: &App, owner: &str) -> AppResult<Value> {
-    let mut tx = db::begin(app, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
     let v: Value = sqlx::query_scalar(
         "SELECT json_build_object('timezone', current_setting('TimeZone'), 'now', now(), 'today', current_date)",
     )
@@ -187,7 +187,7 @@ pub struct GymRef {
 }
 
 pub async fn gym_get(app: &App, owner: &str, a: GymRef) -> AppResult<Value> {
-    let mut tx = db::begin(app, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
     let id = resolve::id(&mut tx, owner, Kind::Gym, &a.gym).await?;
     let v = gym_json(&mut tx, owner, id).await?;
     tx.commit().await?;
@@ -195,7 +195,7 @@ pub async fn gym_get(app: &App, owner: &str, a: GymRef) -> AppResult<Value> {
 }
 
 pub async fn gym_list(app: &App, owner: &str) -> AppResult<Value> {
-    let mut tx = db::begin(app, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
     let v: Value = sqlx::query_scalar(
         "SELECT coalesce(json_agg(json_build_object(
                     'id', g.id, 'name', g.name, 'aliases', g.aliases,
@@ -360,7 +360,7 @@ const EQUIPMENT_JSON: &str = "json_build_object('id', id, 'name', name, 'aliases
                                                'description', NULLIF(description, ''))";
 
 pub async fn equipment_list(app: &App, owner: &str) -> AppResult<Value> {
-    let mut tx = db::begin(app, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
     let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
         "SELECT coalesce(json_agg({EQUIPMENT_JSON} ORDER BY category, name), '[]'::json)
          FROM equipment WHERE owner_sub = $1"
@@ -522,7 +522,7 @@ pub struct ExerciseSearchArgs {
 }
 
 pub async fn exercise_search(app: &App, owner: &str, a: ExerciseSearchArgs) -> AppResult<Value> {
-    let mut tx = db::begin(app, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
     // Narrow by name with the resolver's scoring so "benchpres" still finds things.
     let ids: Option<Vec<i64>> = match &a.query {
         Some(q) => Some(match resolve::lookup(&mut tx, owner, Kind::Exercise, q).await? {

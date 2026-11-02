@@ -59,8 +59,10 @@ pub fn stale_action(set_count: i64, has_notes: bool) -> StaleAction {
 }
 
 /// Closes the open workout if its last activity is older than `stale_after`.
-/// Returns a description of what was done, for the tool result.
-pub async fn close_stale(app: &App, tx: &mut Tx, owner: &str) -> AppResult<Option<Value>> {
+/// Returns a description of what was done, for the tool result. With `save = false`
+/// (read-only tools) it only reports what the next workout action will do; the outcome is
+/// deterministic, so the preview and the later closure are identical.
+pub async fn close_stale(app: &App, tx: &mut Tx, owner: &str, save: bool) -> AppResult<Option<Value>> {
     let Some(open) = open_workout(tx, owner).await? else {
         return Ok(None);
     };
@@ -71,6 +73,7 @@ pub async fn close_stale(app: &App, tx: &mut Tx, owner: &str) -> AppResult<Optio
     }
     let action = stale_action(open.set_count, open.has_notes);
     match action {
+        _ if !save => {}
         StaleAction::Delete => {
             sqlx::query("DELETE FROM workout WHERE id = $1")
                 .bind(open.id)
@@ -92,7 +95,12 @@ pub async fn close_stale(app: &App, tx: &mut Tx, owner: &str) -> AppResult<Optio
     Ok(Some(json!({
         "workout_id": open.id,
         "gym": open.gym,
-        "action": if action == StaleAction::Delete { "deleted (no sets, no notes)" } else { "auto-finished (stale)" },
+        "action": match (action, save) {
+            (StaleAction::Delete, true) => "deleted (no sets, no notes)",
+            (StaleAction::Finish, true) => "auto-finished (stale)",
+            (StaleAction::Delete, false) => "stale: will be deleted on the next workout action (no sets, no notes)",
+            (StaleAction::Finish, false) => "stale: will be auto-finished on the next workout action",
+        },
         "last_activity": at,
         "sets": open.set_count,
     })))
@@ -170,7 +178,7 @@ pub struct StartArgs {
 
 pub async fn start(app: &App, owner: &str, a: StartArgs) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
-    let closed = close_stale(app, &mut tx, owner).await?;
+    let closed = close_stale(app, &mut tx, owner, true).await?;
     let gym_id = resolve::id(&mut tx, owner, Kind::Gym, &a.gym).await?;
     let mut superseded = None;
 
@@ -264,7 +272,7 @@ pub struct FinishArgs {
 
 pub async fn finish(app: &App, owner: &str, a: FinishArgs) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
-    if let Some(closed) = close_stale(app, &mut tx, owner).await? {
+    if let Some(closed) = close_stale(app, &mut tx, owner, true).await? {
         tx.commit().await?;
         return Ok(json!({"status": "already auto-finished because it was stale", "closed_stale": closed}));
     }
@@ -354,13 +362,12 @@ pub async fn update(app: &App, owner: &str, a: UpdateArgs) -> AppResult<Value> {
 }
 
 pub async fn current(app: &App, owner: &str) -> AppResult<Value> {
-    let mut tx = db::begin(app, owner).await?;
-    let closed = close_stale(app, &mut tx, owner).await?;
+    let mut tx = db::begin_read(app, owner).await?;
+    let closed = close_stale(app, &mut tx, owner, false).await?;
     let w = match open_workout(&mut tx, owner).await? {
-        Some(o) => workout_json(&mut tx, owner, o.id).await?,
-        None => Value::Null,
+        Some(o) if closed.is_none() => workout_json(&mut tx, owner, o.id).await?,
+        _ => Value::Null,
     };
-    tx.commit().await?;
     Ok(json!({"open_workout": w, "closed_stale": closed}))
 }
 
@@ -440,7 +447,7 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
     let workout_id = match a.workout_id {
         Some(id) => id,
         None => {
-            closed = close_stale(app, &mut tx, owner).await?;
+            closed = close_stale(app, &mut tx, owner, true).await?;
             match open_workout(&mut tx, owner).await? {
                 Some(o) => o.id,
                 None => {

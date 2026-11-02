@@ -113,9 +113,18 @@ async fn stale_workout_with_sets_closes_at_last_set(pool: PgPool) {
         stale_after: Duration::from_secs(1800),
         ..app.clone()
     };
+    // Reads are read-only: they report the closure but don't save it…
     let cur = workout::current(&impatient, ME).await.unwrap();
     assert!(cur["open_workout"].is_null());
-    assert_eq!(cur["closed_stale"]["action"], "auto-finished (stale)");
+    assert_eq!(
+        cur["closed_stale"]["action"],
+        "stale: will be auto-finished on the next workout action"
+    );
+    let still_open = search::workout_list(&app, ME, a(json!({}))).await.unwrap();
+    assert!(still_open[0]["finished_at"].is_null());
+    // …the next workout action does, with the same outcome.
+    let fin = workout::finish(&impatient, ME, a(json!({}))).await.unwrap();
+    assert_eq!(fin["closed_stale"]["action"], "auto-finished (stale)");
     let past = search::workout_list(&app, ME, a(json!({}))).await.unwrap();
     assert_eq!(past[0]["finish_reason"], "stale");
     assert_eq!(

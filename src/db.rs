@@ -49,6 +49,24 @@ pub struct App {
     pub stale_after: Duration,
 }
 
+/// Like `begin`, but the transaction is READ ONLY: Postgres rejects any write, which is what
+/// backs the `read_only_hint` on read tools. Doesn't create the settings row.
+pub async fn begin_read(app: &App, owner: &str) -> AppResult<Tx> {
+    let mut tx = app.pool.begin().await?;
+    sqlx::query("SET TRANSACTION READ ONLY").execute(&mut *tx).await?;
+    let tz: String =
+        sqlx::query_scalar("SELECT coalesce((SELECT timezone FROM user_settings WHERE owner_sub = $1), $2)")
+            .bind(owner)
+            .bind(&app.default_timezone)
+            .fetch_one(&mut *tx)
+            .await?;
+    sqlx::query("SELECT set_config('TimeZone', $1, true)")
+        .bind(&tz)
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
+}
+
 /// Starts a transaction for `owner` with the session TimeZone set to the user's timezone.
 /// From then on Postgres does all time handling: naive input strings cast with
 /// `::timestamptz` are read as local time, `date_trunc`/`current_date` use local
