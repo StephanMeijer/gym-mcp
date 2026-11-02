@@ -1,6 +1,7 @@
 //! Read-only search and analysis. All dates are by performed_at, in the user's timezone
 //! (the transaction's TimeZone is set by `db::begin`).
 
+use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::Deserialize;
 // Dynamic SQL only interpolates compile-time constants and enum-mapped literals; user input is always bound.
@@ -113,40 +114,123 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
     .bind(gym_id)
     .fetch_one(&mut *tx)
     .await?;
-    v["muscle_groups"] = muscle_groups_json(&mut tx, owner).await?;
+    v["muscle_groups"] = muscle_groups_overview(&mut tx, owner).await?;
     tx.commit().await?;
     Ok(json!({"overview": v, "closed_stale": closed}))
 }
 
-/// Per muscle group: recency, weighted sets (primary 1, secondary 0.5) over rolling 7 and 28 days,
-/// training days and average RPE. Strength exercises only; local days via the session TimeZone.
-async fn muscle_groups_json(tx: &mut Tx, owner: &str) -> AppResult<Value> {
+/// The window `[lo, hi)`: either the last `days` days up to now, or `from` (to `to`, default now).
+/// Times are parsed in SQL so naive local input uses the session TimeZone.
+async fn window(
+    tx: &mut Tx,
+    days: Option<i64>,
+    from: &Option<String>,
+    to: &Option<String>,
+) -> AppResult<(DateTime<Utc>, DateTime<Utc>)> {
+    let (lo, hi): (DateTime<Utc>, DateTime<Utc>) = sqlx::query_as(
+        "SELECT coalesce($1::timestamptz, now() - make_interval(days => $3::int)), coalesce($2::timestamptz, now())",
+    )
+    .bind(from)
+    .bind(to)
+    .bind(days.map(|d| d as i32))
+    .fetch_one(&mut **tx)
+    .await?;
+    if lo >= hi {
+        return Err(user_err("from must be before to"));
+    }
+    Ok((lo, hi))
+}
+
+/// Per muscle group in `[lo, hi)`: weighted sets (primary 1, secondary 0.5), sets per week, local training
+/// days and average RPE (primary only), the exercises behind the sets, and all-time days since (primary).
+/// Strength exercises only. Shared by training_overview and muscle_group_volume.
+async fn muscle_volume(tx: &mut Tx, owner: &str, lo: DateTime<Utc>, hi: DateTime<Utc>) -> AppResult<Value> {
     let groups: Vec<String> = MUSCLE_GROUPS.iter().map(|s| s.to_string()).collect();
     Ok(sqlx::query_scalar(
         "WITH hits AS (
-            SELECT g.muscle_group, g.weight, s.performed_at, s.rpe
+            SELECT g.muscle_group, g.weight, s.performed_at, s.rpe, e.name AS exercise
             FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN exercise e ON e.id = s.exercise_id
             CROSS JOIN LATERAL (SELECT unnest(e.muscle_groups), 1.0
                                 UNION ALL SELECT unnest(e.secondary_muscle_groups), 0.5) g(muscle_group, weight)
-            WHERE w.owner_sub = $1 AND e.kind = 'strength')
-         SELECT json_object_agg(muscle_group, stats ORDER BY i) FROM (
-            SELECT m.muscle_group, m.i, json_build_object(
-                'days_since', current_date - (max(h.performed_at) FILTER (WHERE h.weight = 1))::date,
-                'sets_7d', coalesce(sum(h.weight) FILTER (WHERE h.performed_at >= now() - interval '7 days'), 0),
-                'sets_28d', coalesce(sum(h.weight) FILTER (WHERE h.performed_at >= now() - interval '28 days'), 0),
-                'train_days_28d', count(DISTINCT h.performed_at::date)
-                                      FILTER (WHERE h.weight = 1 AND h.performed_at >= now() - interval '28 days'),
-                'avg_rpe_28d', round((avg(h.rpe)
-                                      FILTER (WHERE h.weight = 1 AND h.performed_at >= now() - interval '28 days'))::numeric, 1)
-            ) AS stats
-            FROM unnest($2::text[]) WITH ORDINALITY m(muscle_group, i)
-            LEFT JOIN hits h ON h.muscle_group = m.muscle_group
-            GROUP BY m.muscle_group, m.i) x",
+            WHERE w.owner_sub = $1 AND e.kind = 'strength'),
+         win AS (SELECT * FROM hits WHERE performed_at >= $2 AND performed_at < $3),
+         span AS (SELECT extract(epoch FROM $3::timestamptz - $2::timestamptz) / 86400 AS days)
+         SELECT json_build_object(
+            'from', $2::timestamptz, 'to', $3::timestamptz, 'days', round((SELECT days FROM span)::numeric, 1),
+            'muscle_groups', json_object_agg(m.muscle_group, json_build_object(
+                'sets', x.sets,
+                'sets_per_week', round(x.sets / (SELECT days FROM span)::numeric * 7, 1),
+                'train_days', (SELECT count(DISTINCT performed_at::date) FROM win
+                               WHERE muscle_group = m.muscle_group AND weight = 1),
+                'avg_rpe', (SELECT round(avg(rpe)::numeric, 1) FROM win WHERE muscle_group = m.muscle_group AND weight = 1),
+                'days_since', (SELECT current_date - max(performed_at)::date FROM hits
+                               WHERE muscle_group = m.muscle_group AND weight = 1),
+                'from_exercises', coalesce((
+                    SELECT json_agg(json_build_object('exercise', exercise, 'sets', sets) ORDER BY sets DESC, exercise)
+                    FROM (SELECT exercise, sum(weight) AS sets FROM win WHERE muscle_group = m.muscle_group
+                          GROUP BY exercise ORDER BY sets DESC, exercise LIMIT 5) t), '[]'::json))
+                ORDER BY m.i))
+         FROM unnest($4::text[]) WITH ORDINALITY m(muscle_group, i)
+         CROSS JOIN LATERAL (SELECT coalesce(sum(weight), 0) AS sets FROM win WHERE muscle_group = m.muscle_group) x",
     )
     .bind(owner)
+    .bind(lo)
+    .bind(hi)
     .bind(&groups)
     .fetch_one(&mut **tx)
     .await?)
+}
+
+/// The overview's per-muscle summary: the last 7 and 28 days from `muscle_volume`.
+async fn muscle_groups_overview(tx: &mut Tx, owner: &str) -> AppResult<Value> {
+    let (lo7, hi) = window(tx, Some(7), &None, &None).await?;
+    let lo28 = hi - chrono::Duration::days(28);
+    let w7 = muscle_volume(tx, owner, lo7, hi).await?;
+    let w28 = muscle_volume(tx, owner, lo28, hi).await?;
+    let mut out = serde_json::Map::new();
+    for g in MUSCLE_GROUPS {
+        let (a, b) = (&w7["muscle_groups"][g], &w28["muscle_groups"][g]);
+        out.insert(
+            g.to_string(),
+            json!({"days_since": b["days_since"], "sets_7d": a["sets"], "sets_28d": b["sets"],
+                   "train_days_28d": b["train_days"], "avg_rpe_28d": b["avg_rpe"]}),
+        );
+    }
+    Ok(Value::Object(out))
+}
+
+// ---------- muscle_group_volume ----------
+
+#[derive(Deserialize, JsonSchema)]
+pub struct MuscleVolumeArgs {
+    /// The last N days up to now (1-365). Default 7 when from is not given.
+    pub days: Option<i64>,
+    /// Start of a fixed period, inclusive. RFC 3339 or local ("2026-10-01").
+    pub from: Option<String>,
+    /// End of a fixed period, exclusive. Default now.
+    pub to: Option<String>,
+}
+
+pub async fn muscle_group_volume(app: &App, owner: &str, a: MuscleVolumeArgs) -> AppResult<Value> {
+    if a.days.is_some() && (a.from.is_some() || a.to.is_some()) {
+        return Err(user_err("pass days, or from/to, not both"));
+    }
+    if a.to.is_some() && a.from.is_none() {
+        return Err(user_err("to needs from"));
+    }
+    if a.days.is_some_and(|d| !(1..=365).contains(&d)) {
+        return Err(user_err("days must be between 1 and 365"));
+    }
+    let days = if a.from.is_none() {
+        Some(a.days.unwrap_or(7))
+    } else {
+        None
+    };
+    let mut tx = db::begin_read(app, owner).await?;
+    let (lo, hi) = window(&mut tx, days, &a.from, &a.to).await?;
+    let v = muscle_volume(&mut tx, owner, lo, hi).await?;
+    tx.commit().await?;
+    Ok(v)
 }
 
 // ---------- search ----------
