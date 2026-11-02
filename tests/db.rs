@@ -1122,16 +1122,16 @@ async fn measurements_round_trip(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn height_is_stored_in_cm_and_kept_apart(pool: PgPool) {
+async fn body_height_is_stored_in_cm_and_kept_apart(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
     measurement::measurement_add(&app, ME, a(json!({"value": 80.0})))
         .await
         .unwrap();
-    let h = measurement::measurement_add(&app, ME, a(json!({"kind": "height", "value": 72, "unit": "in"})))
+    let h = measurement::measurement_add(&app, ME, a(json!({"kind": "body_height", "value": 72, "unit": "in"})))
         .await
         .unwrap();
-    assert_eq!(h["kind"], "height");
+    assert_eq!(h["kind"], "body_height");
     assert_eq!(h["unit"], "cm");
     assert!((h["value"].as_f64().unwrap() - 182.88).abs() < 1e-9, "{h}");
 
@@ -1143,7 +1143,7 @@ async fn height_is_stored_in_cm_and_kept_apart(pool: PgPool) {
         user_msg(measurement::measurement_update(&app, ME, a(json!({"id": h["id"], "value": 80, "unit": "kg"}))).await);
     assert!(msg.contains("cm or in"), "{msg}");
 
-    let heights = measurement::measurement_list(&app, ME, a(json!({"kind": "height"})))
+    let heights = measurement::measurement_list(&app, ME, a(json!({"kind": "body_height"})))
         .await
         .unwrap();
     assert_eq!(heights.as_array().unwrap().len(), 1);

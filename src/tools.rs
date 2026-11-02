@@ -51,7 +51,7 @@ Cardio: exercises with kind cardio. \"20 min bike, level 8, 7.5 km\" → one set
 intensity \"level 8\". progress/personal_records/set_search report distance and pace (seconds per km).
 Body weight: whenever the user mentions their weight (\"82.4 this morning\"), measurement_add (unit lb if they gave pounds). \
 training_overview.body_weight has the latest and its 4-week change; use it to judge a cut or bulk. \
-If they mention their height (\"lengte\"), measurement_add kind height (cm; unit in for inches).
+If they mention their height (\"lengte\"), measurement_add kind body_height (cm; unit in for inches).
 Times: answers are in the user's timezone; inputs may be RFC 3339 or local (\"2026-11-02 19:40\").
 Photos stay with you; send only text.";
 

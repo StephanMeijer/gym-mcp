@@ -21,20 +21,20 @@ pub enum MeasurementKind {
     #[default]
     BodyWeight,
     /// Body height ("length").
-    Height,
+    BodyHeight,
 }
 
 impl MeasurementKind {
     fn as_str(self) -> &'static str {
         match self {
             MeasurementKind::BodyWeight => "body_weight",
-            MeasurementKind::Height => "height",
+            MeasurementKind::BodyHeight => "body_height",
         }
     }
 
     fn from_db(s: &str) -> Self {
         match s {
-            "height" => MeasurementKind::Height,
+            "body_height" => MeasurementKind::BodyHeight,
             _ => MeasurementKind::BodyWeight,
         }
     }
@@ -43,7 +43,7 @@ impl MeasurementKind {
     fn unit(self) -> &'static str {
         match self {
             MeasurementKind::BodyWeight => "kg",
-            MeasurementKind::Height => "cm",
+            MeasurementKind::BodyHeight => "cm",
         }
     }
 }
@@ -61,15 +61,15 @@ pub enum Unit {
 fn convert(kind: MeasurementKind, value: f64, unit: Option<Unit>) -> AppResult<f64> {
     use {MeasurementKind as K, Unit as U};
     match (kind, unit) {
-        (_, None) | (K::BodyWeight, Some(U::Kg)) | (K::Height, Some(U::Cm)) => Ok(value),
+        (_, None) | (K::BodyWeight, Some(U::Kg)) | (K::BodyHeight, Some(U::Cm)) => Ok(value),
         (K::BodyWeight, Some(U::Lb)) => Ok(value * KG_PER_LB),
-        (K::Height, Some(U::In)) => Ok(value * CM_PER_IN),
+        (K::BodyHeight, Some(U::In)) => Ok(value * CM_PER_IN),
         _ => Err(user_err(format!(
             "that unit doesn't fit {}; use {}",
             kind.as_str(),
             match kind {
                 K::BodyWeight => "kg or lb",
-                K::Height => "cm or in",
+                K::BodyHeight => "cm or in",
             }
         ))),
     }
@@ -86,7 +86,7 @@ async fn measured_at(tx: &mut Tx, s: &Option<String>) -> AppResult<Option<chrono
 pub struct MeasurementAddArgs {
     /// The value in `unit` ("82.4", or 180 with unit lb).
     pub value: f64,
-    /// Unit of `value`: kg/lb for body_weight (default kg), cm/in for height (default cm); stored as kg / cm.
+    /// Unit of `value`: kg/lb for body_weight (default kg), cm/in for body_height (default cm); stored as kg / cm.
     pub unit: Option<Unit>,
     /// Default body_weight.
     #[serde(default)]
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn units_convert_per_kind() {
-        let (w, h) = (MeasurementKind::BodyWeight, MeasurementKind::Height);
+        let (w, h) = (MeasurementKind::BodyWeight, MeasurementKind::BodyHeight);
         assert_eq!(convert(w, 80.0, None).ok(), Some(80.0));
         assert!((convert(w, 180.0, Some(Unit::Lb)).ok().unwrap() - 81.646_627).abs() < 1e-6);
         assert_eq!(convert(h, 183.0, None).ok(), Some(183.0));
