@@ -26,9 +26,13 @@ Gym logbook. Typical flow:
 5. When the user leaves → workout_finish. Stale workouts close automatically.
 Gym equipment: one free-text field per gym. When the user shows or mentions equipment, add it there with gym_update, \
 keeping what's already written: what it is, how many, weight range or max load, where it is, and what's missing.
-Muscle groups: muscle_groups = the target (primary) muscles, secondary_muscle_groups = the ones that assist (bench press: chest; secondary triceps, front_delts). days_since_muscle_group counts primary only. Filters accept the coarse names back, shoulders, legs and arms; exercises store the specific ones.
+Muscle groups: muscle_groups = the target (primary) muscles, secondary_muscle_groups = the ones that assist (bench press: chest; secondary triceps, front_delts). Filters accept the coarse names back, shoulders, legs and arms; exercises store the specific ones.
 Descriptions: when creating exercises, add a short description (what it looks like, how it's set up) so it can be \
 recognized from a photo later.
+Muscle balance: training_overview.muscle_groups has per muscle days_since (primary only), sets_7d / sets_28d \
+(weighted: primary 1, secondary 0.5; strength only), train_days_28d and avg_rpe_28d. Rule of thumb for hypertrophy: \
+~10-20 sets per muscle per week, trained 2+ times a week; for strength, fewer and heavier sets. Point out muscles well \
+below that or not trained in 14+ days; the judgement is yours.
 Effort: when the user says how a set felt, record rpe (1-10; \"2 left in the tank\" = RPE 8, \"to failure\" = 10) and rest_s \
 if mentioned. Ask for their goal once (settings_update goal). Recommend progression from goal + last_session in \
 training_overview: e.g. all sets at RPE <= 7 → add weight or reps. If a logged weight doesn't fit the gym's equipment text, mention it.
@@ -305,7 +309,7 @@ impl GymServer {
 
     // ----- search & analysis -----
     #[tool(
-        description = "Everything needed to recommend what to do next at a gym: its equipment text, every exercise with its equipment text and last session, days since each muscle group, today's work and the goal.",
+        description = "Everything needed to recommend what to do next at a gym: its equipment text, every exercise with its equipment text and last session, per-muscle recency, weekly/4-week weighted sets, training days and RPE, today's work and the goal.",
         annotations(title = "Training overview", read_only_hint = true, open_world_hint = false)
     )]
     async fn training_overview(&self, p: P, a: Parameters<OverviewArgs>) -> R {

@@ -289,8 +289,8 @@ async fn search_records_and_overview(pool: PgPool) {
     );
 
     let o = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
-    assert_eq!(o["overview"]["days_since_muscle_group"]["quads"], 0);
-    assert!(o["overview"]["days_since_muscle_group"]["chest"].is_null());
+    assert_eq!(o["overview"]["muscle_groups"]["quads"]["days_since"], 0);
+    assert!(o["overview"]["muscle_groups"]["chest"]["days_since"].is_null());
     assert_eq!(o["overview"]["done_today"][0]["sets"], 3);
 
     let alt = search::exercise_alternatives(&app, ME, a(json!({"exercise": "push-up"})))
@@ -632,10 +632,13 @@ async fn muscle_groups_primary_secondary_and_aliases(pool: PgPool) {
     }
 
     let ov = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
-    let days = &ov["overview"]["days_since_muscle_group"];
-    assert_eq!(days["chest"], 0);
-    assert!(days["triceps"].is_null(), "secondary doesn't count: {days}");
-    assert!(days.get("back").is_none() && days.get("cardio").is_none());
+    let groups = &ov["overview"]["muscle_groups"];
+    assert_eq!(groups["chest"]["days_since"], 0);
+    assert!(
+        groups["triceps"]["days_since"].is_null(),
+        "secondary doesn't count: {groups}"
+    );
+    assert!(groups.get("back").is_none() && groups.get("cardio").is_none());
 
     let back = search::set_search(&app, ME, a(json!({"muscle_group": "back"})))
         .await
@@ -837,4 +840,73 @@ async fn machine_defaults_per_gym_and_groups_history(pool: PgPool) {
         .await
         .unwrap();
     assert!(w["exercises"][0]["sets"][0]["machine"].is_null());
+}
+
+#[sqlx::test]
+async fn muscle_group_volume_in_overview(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    setup::exercise_create(
+        &app,
+        ME,
+        a(json!({"name": "Barbell bench press", "muscle_groups": ["chest"],
+                 "secondary_muscle_groups": ["triceps", "front_delts"]})),
+    )
+    .await
+    .unwrap();
+    setup::exercise_create(
+        &app,
+        ME,
+        a(json!({"name": "Bike", "kind": "cardio", "muscle_groups": ["quads"]})),
+    )
+    .await
+    .unwrap();
+
+    let start = Utc::now() - chrono::Duration::days(10);
+    let past = workout::add_past(
+        &app,
+        ME,
+        a(json!({"gym": "ndsm", "started_at": start.to_rfc3339(),
+                 "finished_at": (start + chrono::Duration::hours(1)).to_rfc3339()})),
+    )
+    .await
+    .unwrap();
+    workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "barbell bench", "workout_id": past["workout_id"],
+                 "sets": [{"reps": 8, "weight_kg": 60, "rpe": 7,
+                           "performed_at": (start + chrono::Duration::minutes(5)).to_rfc3339()}]})),
+    )
+    .await
+    .unwrap();
+
+    workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "barbell bench", "sets": [{"reps": 8, "weight_kg": 60, "rpe": 8}, {"reps": 8, "weight_kg": 60}]})),
+    )
+    .await
+    .unwrap();
+    workout::set_add(&app, ME, a(json!({"exercise": "bike", "sets": [{"duration_s": 600}]})))
+        .await
+        .unwrap();
+
+    let ov = search::training_overview(&app, ME, a(json!({}))).await.unwrap();
+    let g = &ov["overview"]["muscle_groups"];
+    assert_eq!(g["chest"]["days_since"], 0);
+    assert_eq!(g["chest"]["sets_7d"], 2.0);
+    assert_eq!(g["chest"]["sets_28d"], 3.0);
+    assert_eq!(g["chest"]["train_days_28d"], 2);
+    assert_eq!(g["chest"]["avg_rpe_28d"], 7.5, "the set without rpe is ignored");
+    assert_eq!(g["triceps"]["sets_7d"], 1.0, "secondary counts half");
+    assert_eq!(g["triceps"]["sets_28d"], 1.5);
+    assert!(g["triceps"]["days_since"].is_null(), "secondary only");
+    assert_eq!(g["triceps"]["train_days_28d"], 0);
+    assert_eq!(g["quads"]["sets_28d"], 0.0, "cardio doesn't count");
+    assert!(g["calves"]["days_since"].is_null());
+    assert_eq!(g["calves"]["sets_7d"], 0.0);
+    assert!(g["calves"]["avg_rpe_28d"].is_null());
+    assert_eq!(g.as_object().unwrap().len(), setup::MUSCLE_GROUPS.len());
 }
