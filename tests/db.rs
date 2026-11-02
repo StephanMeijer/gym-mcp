@@ -1370,6 +1370,16 @@ async fn unilateral_counts_per_side(pool: PgPool) {
     assert_eq!(total["volume_kg"], 400.0);
     assert_eq!(total["e1rm_kg"], 26.7);
     assert_eq!(chest(app.clone()).await, 5.0);
+    // 40 kg total and 20 kg per side are the same weight.
+    let top = search::progress(&app, ME, a(json!({"exercise": "cable fly", "metric": "top_weight"})))
+        .await
+        .unwrap();
+    assert_eq!(top["series"][0]["value"], 20.0);
+    let pr = search::personal_records(&app, ME, a(json!({"exercise": "cable fly"})))
+        .await
+        .unwrap();
+    assert_eq!(pr[0]["heaviest_set"]["weight_kg"], 20.0);
+    assert_eq!(pr[0]["max_reps_by_weight_kg"], json!({"20": 10}));
 
     let sets = added["workout"]["exercises"][0]["sets"].as_array().unwrap();
     workout::set_update(&app, ME, a(json!({"set_id": sets[2]["set_id"], "unilateral": false})))

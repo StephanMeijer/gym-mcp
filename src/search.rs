@@ -14,15 +14,23 @@ use crate::resolve::{self, Kind};
 use crate::setup::{self, MUSCLE_GROUPS, expand_opt};
 use crate::workout;
 
+// Macros so the consts below can be built with concat! and stay const.
+// The load one side moved: a unilateral set logged as a total is split over both sides.
+macro_rules! load {
+    () => {
+        "(s.weight_kg / CASE WHEN s.unilateral AND s.load_basis = 'total' THEN 2 ELSE 1 END)"
+    };
+}
 // A unilateral set counts once per side (reps are per side).
-const SIDES: &str = "(CASE WHEN s.unilateral THEN 2 ELSE 1 END)";
-// Both below use LOAD, the load one side moved: a unilateral set logged as a total is split over both sides.
-// Epley; per limb for unilateral sets.
-const E1RM: &str =
-    "(s.weight_kg / CASE WHEN s.unilateral AND s.load_basis = 'total' THEN 2 ELSE 1 END * (1 + s.reps / 30.0))";
-// LOAD * reps * SIDES
-const VOLUME: &str = "(s.weight_kg / CASE WHEN s.unilateral AND s.load_basis = 'total' THEN 2 ELSE 1 END * s.reps
-                       * CASE WHEN s.unilateral THEN 2 ELSE 1 END)";
+macro_rules! sides {
+    () => {
+        "(CASE WHEN s.unilateral THEN 2 ELSE 1 END)"
+    };
+}
+const LOAD: &str = load!();
+const SIDES: &str = sides!();
+const E1RM: &str = concat!("(", load!(), " * (1 + s.reps / 30.0))"); // Epley; per limb for unilateral sets
+const VOLUME: &str = concat!("(", load!(), " * s.reps * ", sides!(), ")");
 const PACE: &str = "(s.duration_s * 1000.0 / NULLIF(s.distance_m, 0))"; // seconds per km
 
 fn limit(l: Option<i64>) -> i64 {
@@ -161,10 +169,9 @@ async fn window(
 /// Strength exercises only. Shared by training_overview and muscle_group_volume.
 async fn muscle_volume(tx: &mut Tx, owner: &str, lo: DateTime<Utc>, hi: DateTime<Utc>) -> AppResult<Value> {
     let groups: Vec<String> = MUSCLE_GROUPS.iter().map(|s| s.to_string()).collect();
-    Ok(sqlx::query_scalar(
+    Ok(sqlx::query_scalar(AssertSqlSafe(format!(
         "WITH hits AS (
-            SELECT g.muscle_group, g.weight, s.performed_at, s.rpe, e.name AS exercise,
-                   CASE WHEN s.unilateral THEN 2 ELSE 1 END AS sides -- SIDES
+            SELECT g.muscle_group, g.weight, s.performed_at, s.rpe, e.name AS exercise, {SIDES} AS sides
             FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN exercise e ON e.id = s.exercise_id
             CROSS JOIN LATERAL (SELECT unnest(e.muscle_groups), 1.0
                                 UNION ALL SELECT unnest(e.secondary_muscle_groups), 0.5) g(muscle_group, weight)
@@ -187,8 +194,8 @@ async fn muscle_volume(tx: &mut Tx, owner: &str, lo: DateTime<Utc>, hi: DateTime
                           GROUP BY exercise ORDER BY sets DESC, exercise LIMIT 5) t), '[]'::json))
                 ORDER BY m.i))
          FROM unnest($4::text[]) WITH ORDINALITY m(muscle_group, i)
-         CROSS JOIN LATERAL (SELECT coalesce(sum(weight * sides), 0) AS sets FROM win WHERE muscle_group = m.muscle_group) x",
-    )
+         CROSS JOIN LATERAL (SELECT coalesce(sum(weight * sides), 0) AS sets FROM win WHERE muscle_group = m.muscle_group) x"
+    )))
     .bind(owner)
     .bind(lo)
     .bind(hi)
@@ -489,7 +496,7 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
     let mut tx = db::begin_read(app, owner).await?;
     let exercise = opt_id(&mut tx, owner, Kind::Exercise, &a.exercise).await?;
     let metric = match a.metric {
-        Metric::TopWeight => "max(s.weight_kg)".to_owned(),
+        Metric::TopWeight => format!("max({LOAD})"),
         Metric::E1rm => format!("round(max({E1RM})::numeric, 1)"),
         Metric::Volume => format!("sum({VOLUME})"),
         Metric::Sets => format!("sum({SIDES})"),
@@ -558,8 +565,8 @@ pub async fn personal_records(app: &App, owner: &str, a: RecordsArgs) -> AppResu
             WHERE w.owner_sub = $1 AND s.set_type = 'working' AND ($2::bigint IS NULL OR s.exercise_id = $2)),
          heaviest AS (
             SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
-                   json_build_object('weight_kg', weight_kg, 'reps', reps, 'performed_at', performed_at, 'set_id', id) AS r
-            FROM mine WHERE weight_kg IS NOT NULL ORDER BY exercise_id, machine_key, weight_kg DESC, reps DESC NULLS LAST, performed_at),
+                   json_build_object('weight_kg', {LOAD}, 'reps', reps, 'performed_at', performed_at, 'set_id', id) AS r
+            FROM mine s WHERE weight_kg IS NOT NULL ORDER BY exercise_id, machine_key, {LOAD} DESC, reps DESC NULLS LAST, performed_at),
          best_e1rm AS (
             SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
                    json_build_object('e1rm_kg', round({E1RM}::numeric, 1), 'weight_kg', weight_kg, 'reps', reps,
@@ -567,8 +574,8 @@ pub async fn personal_records(app: &App, owner: &str, a: RecordsArgs) -> AppResu
             FROM mine s WHERE weight_kg IS NOT NULL AND reps > 0 ORDER BY exercise_id, machine_key, {E1RM} DESC, performed_at),
          reps_at AS (
             SELECT exercise_id, machine_key, json_object_agg(weight_kg, best ORDER BY weight_kg) AS r
-            FROM (SELECT exercise_id, machine_key, weight_kg, max(reps) AS best FROM mine WHERE weight_kg IS NOT NULL AND reps IS NOT NULL
-                  GROUP BY exercise_id, machine_key, weight_kg) t GROUP BY exercise_id, machine_key),
+            FROM (SELECT exercise_id, machine_key, {LOAD} AS weight_kg, max(reps) AS best FROM mine s
+                  WHERE weight_kg IS NOT NULL AND reps IS NOT NULL GROUP BY 1, 2, 3) t GROUP BY exercise_id, machine_key),
          vol AS (
             SELECT DISTINCT ON (exercise_id, machine_key) exercise_id, machine_key,
                    json_build_object('volume_kg', v, 'workout_id', workout_id, 'date', d) AS r
