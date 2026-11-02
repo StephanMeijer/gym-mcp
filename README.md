@@ -9,7 +9,7 @@ Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles
 | | |
 |---|---|
 | **Gym** | name + aliases, `equipment` (free text: "2 leg presses (max 300 kg), dumbbells 2–40 kg, no sled") and notes |
-| **Exercise** | `kind` (strength or cardio), muscle groups from a fixed list, `equipment` it needs (free text; empty = bodyweight) and a description |
+| **Exercise** | `kind` (strength or cardio), primary and secondary muscle groups from a fixed list (`back`, `shoulders`, `legs`, `arms` work as filters), `equipment` it needs (free text; empty = bodyweight) and a description |
 | **Workout** | one visit to one gym; at most one open at a time |
 | **Set** | reps / weight / duration, cardio `distance_m` and free-text `intensity` ("level 12"), optional effort (`rpe` 1–10 in half steps) and `rest_s`; `performed_at` (when it happened) is separate from `logged_at` |
 | **Settings** | timezone and training `goal` (strength / hypertrophy / endurance / general) |
