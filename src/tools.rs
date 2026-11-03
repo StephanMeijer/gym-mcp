@@ -51,6 +51,9 @@ Machines: stack weights only compare within one brand. Pass set_add machine (bra
 visible; reuse a name from machines_used in training_overview). Omitted, it reuses the last machine for that exercise \
 at this gym; check machine_source in the result. Note in the gym's equipment text which brands it has \
 (\"leg press: Technogym + Hammer Strength\"). last_session in training_overview is from the same machine.
+Grip or variant (neutral grip, wide, seated, incline 30°): pass set_add variant instead of writing it in notes. \
+Omitted, it reuses the last variant for that exercise at this gym (check variant_source); \"\" = standard. \
+History, records and last_session are split per variant, like per machine.
 Cardio: exercises with kind cardio. \"20 min bike, level 8, 7.5 km\" → one set with duration_s 1200, distance_m 7500, \
 intensity \"level 8\". progress/personal_records/set_search report distance and pace (seconds per km).
 Body weight: whenever the user mentions their weight (\"82.4 this morning\"), measurement_add (unit lb if they gave pounds). \
