@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/StephanMeijer/gym-mcp/compare/v0.4.0...v0.4.1) - 2026-11-03
+
+### Fixed
+
+- *(tools)* mark body_note_update destructive
+- *(auth)* refresh keys on a typed unknown-kid error, trust discovered iss
+- *(search)* rank note matches before applying the limit
+
+### Other
+
+- Merge pull request #56 from StephanMeijer/fix/search-rank-limit
+- *(measurement)* match schema units exhaustively per kind
+- *(measurement)* derive the stored unit from the accepted units
+- pin every action to a commit in actions.lock
+- fail on dependency advisories with cargo-deny
+- *(readme)* list measurements, body notes and all 33 tools
+- *(overview)* find each exercise's last session with a window function
+
 ## [0.4.0](https://github.com/StephanMeijer/gym-mcp/compare/v0.3.1...v0.4.0) - 2026-11-03
 
 ### Added
