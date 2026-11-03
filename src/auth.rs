@@ -148,11 +148,10 @@ impl Auth {
             Err(TokenError::UnknownKid(_)) => {
                 let _one_fetch = self.refresh.lock().await;
                 if self.keys.read().await.1.elapsed() >= REFRESH_MIN_INTERVAL {
-                    let fetched = self.fetch_keys().await;
-                    let mut keys = self.keys.write().await;
-                    keys.1 = Instant::now();
-                    match fetched {
-                        Ok(k) => keys.0 = k,
+                    // Stamp before fetching, so a failed or cancelled fetch is rate-limited too.
+                    self.keys.write().await.1 = Instant::now();
+                    match self.fetch_keys().await {
+                        Ok(k) => self.keys.write().await.0 = k,
                         Err(err) => tracing::warn!("jwks refresh failed: {err:#}"),
                     }
                 }
@@ -334,6 +333,37 @@ mod tests {
         release.notify_one();
         let unknown = tokio::time::timeout(wait, unknown).await.unwrap().unwrap();
         assert!(matches!(unknown, Err(TokenError::UnknownKid(_))), "{unknown:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_refresh_is_rate_limited_and_keeps_the_keys() {
+        let (base, _) = issuer(None).await;
+        let mut auth = Auth::discover(base.clone(), AUD.into()).await.unwrap();
+        // Authelia is down: its JWKS endpoint answers 500.
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        let down = Router::new().route(
+            "/jwks",
+            get(move || {
+                h.fetch_add(1, SeqCst);
+                async { StatusCode::INTERNAL_SERVER_ERROR }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        auth.jwks_uri = format!("http://{}/jwks", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, down).await.unwrap() });
+        auth.keys.write().await.1 = Instant::now() - REFRESH_MIN_INTERVAL;
+
+        for _ in 0..2 {
+            let unknown = auth.validate(&token(&base, "other")).await;
+            assert!(matches!(unknown, Err(TokenError::UnknownKid(_))), "{unknown:?}");
+        }
+        assert_eq!(hits.load(SeqCst), 1, "the failed fetch counts as the last fetch");
+        assert_eq!(
+            auth.validate(&token(&base, "test")).await,
+            Ok("alice".into()),
+            "current keys kept"
+        );
     }
 
     #[tokio::test]
