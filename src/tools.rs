@@ -419,7 +419,7 @@ impl GymServer {
         annotations(
             title = "Correct body note",
             read_only_hint = false,
-            destructive_hint = false,
+            destructive_hint = true,
             idempotent_hint = true,
             open_world_hint = false
         )
@@ -540,6 +540,11 @@ mod tests {
         assert_eq!(hint("training_overview").read_only_hint, Some(true));
         assert_eq!(hint("workout_current").read_only_hint, Some(true));
         assert_eq!(hint("set_delete").destructive_hint, Some(true));
+        assert_eq!(
+            hint("body_note_update").destructive_hint,
+            Some(true),
+            "it can clear severity and the workout link"
+        );
         assert_eq!(hint("set_add").idempotent_hint, Some(false));
         assert_eq!(hint("workout_start").idempotent_hint, Some(true));
     }
