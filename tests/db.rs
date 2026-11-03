@@ -832,7 +832,7 @@ async fn exercise_update_changes_only_the_fields_passed(pool: PgPool) {
     setup::exercise_update(
         &app,
         ME,
-        a(json!({"exercise": "leg press", "description": "45° sled", "aliases": ["lp"]})),
+        a(json!({"exercise": "leg press", "description": "45° sled", "aliases": ["lp"], "secondary_muscle_groups": ["calves"]})),
     )
     .await
     .unwrap();
@@ -845,6 +845,17 @@ async fn exercise_update_changes_only_the_fields_passed(pool: PgPool) {
     assert_eq!(e["aliases"], json!(["lp"]));
     assert_eq!(e["muscle_groups"], json!(["quads", "glutes"]));
     assert_eq!(e["kind"], "strength");
+    assert_eq!(e["secondary_muscle_groups"], json!(["calves"]));
+
+    let e = setup::exercise_update(
+        &app,
+        ME,
+        a(json!({"exercise": "lp", "muscle_groups": ["quads", "glutes", "hamstrings"]})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(e["muscle_groups"], json!(["quads", "glutes", "hamstrings"]));
+    assert_eq!(e["secondary_muscle_groups"], json!(["calves"]));
 
     let e = setup::exercise_update(&app, ME, a(json!({"exercise": "lp", "name": "  Leg press 45  "})))
         .await
