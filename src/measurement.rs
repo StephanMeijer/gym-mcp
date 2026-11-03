@@ -51,18 +51,12 @@ impl MeasurementKind {
         serde_json::from_value(Value::String(s.to_owned())).map_err(|_| user_err(format!("unknown kind {s}")))
     }
 
-    /// The unit values of this kind are stored in.
+    /// The unit values of this kind are stored in: the first of `units`.
     fn unit(self) -> &'static str {
-        match self {
-            MeasurementKind::BodyWeight => "kg",
-            MeasurementKind::BodyHeight | MeasurementKind::WaistCircumference => "cm",
-            MeasurementKind::BodyFat => "%",
-            MeasurementKind::RestingHeartRate => "bpm",
-            MeasurementKind::BloodPressureSystolic | MeasurementKind::BloodPressureDiastolic => "mmHg",
-        }
+        self.units()[0].0.as_str()
     }
 
-    /// Accepted input units and their factor to the stored unit.
+    /// Accepted input units and their factor to the stored unit, which comes first.
     fn units(self) -> &'static [(Unit, f64)] {
         match self {
             MeasurementKind::BodyWeight => &[(Unit::Kg, 1.0), (Unit::Lb, KG_PER_LB)],
@@ -86,6 +80,21 @@ pub enum Unit {
     Percent,
     Bpm,
     Mmhg,
+}
+
+impl Unit {
+    /// As stored in `measurement.unit`.
+    fn as_str(self) -> &'static str {
+        match self {
+            Unit::Kg => "kg",
+            Unit::Lb => "lb",
+            Unit::Cm => "cm",
+            Unit::In => "in",
+            Unit::Percent => "%",
+            Unit::Bpm => "bpm",
+            Unit::Mmhg => "mmHg",
+        }
+    }
 }
 
 /// `value` in `unit` (default: the kind's own unit) converted to the kind's stored unit.
@@ -292,5 +301,21 @@ mod tests {
             Some(128.0)
         );
         assert!(convert(MeasurementKind::RestingHeartRate, 52.0, Some(Unit::Mmhg)).is_err());
+    }
+
+    #[test]
+    fn stored_units_match_the_schema() {
+        // The (kind, unit) pairs measurement_check allows (migration 0011).
+        for (kind, unit) in [
+            (MeasurementKind::BodyWeight, "kg"),
+            (MeasurementKind::BodyHeight, "cm"),
+            (MeasurementKind::WaistCircumference, "cm"),
+            (MeasurementKind::BodyFat, "%"),
+            (MeasurementKind::RestingHeartRate, "bpm"),
+            (MeasurementKind::BloodPressureSystolic, "mmHg"),
+            (MeasurementKind::BloodPressureDiastolic, "mmHg"),
+        ] {
+            assert_eq!(kind.unit(), unit, "{}", kind.as_str());
+        }
     }
 }
