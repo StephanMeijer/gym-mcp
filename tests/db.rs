@@ -690,7 +690,14 @@ async fn muscle_groups_primary_secondary_and_aliases(pool: PgPool) {
         groups.group("triceps")["days_since"].is_null(),
         "secondary doesn't count: {groups}"
     );
-    assert!(groups.get("back").is_none() && groups.get("cardio").is_none());
+    assert!(
+        groups
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["muscle_group"] != "back" && r["muscle_group"] != "cardio"),
+        "{groups}"
+    );
 
     let back = search::set_search(&app, ME, a(json!({"muscle_group": "back"})))
         .await
