@@ -1789,6 +1789,19 @@ async fn shift_sets_moves_workout_with_its_sets(pool: PgPool) {
         .await,
     );
     assert!(msg.contains("future"), "{msg}");
+    // The sets land in the past, but the shifted finish would not.
+    let msg = user_msg(
+        workout::update(
+            &app,
+            ME,
+            a(
+                json!({"workout_id": id, "started_at": (Utc::now() - chrono::Duration::minutes(30)).to_rfc3339(),
+                     "shift_sets": true}),
+            ),
+        )
+        .await,
+    );
+    assert!(msg.contains("future"), "{msg}");
     let w = workout::update(&app, ME, a(json!({"workout_id": id}))).await.unwrap();
     assert_eq!(times(&w), [m(130), m(145)]);
     assert_eq!(ts(&w["finished_at"]), m(180));

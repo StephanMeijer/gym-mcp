@@ -357,6 +357,9 @@ pub async fn update(app: &App, owner: &str, a: UpdateArgs) -> AppResult<Value> {
         }
         // An open workout stays open; an explicit finished_at wins.
         finished = finished.or(t.finished_at.map(|f| f + offset));
+        if let Some(f) = finished {
+            not_future(f, now)?;
+        }
     }
     sqlx::query(
         "UPDATE workout SET
@@ -797,7 +800,9 @@ pub async fn set_update(app: &App, owner: &str, a: SetUpdateArgs) -> AppResult<V
     let ids = set_ids(a.set_id, &a.set_ids)?;
     if a.performed_at.is_some() && ids.len() > 1 {
         // The same instant on every set would collapse their order and rest spacing.
-        return Err(user_err("performed_at applies to one set at a time"));
+        return Err(user_err(
+            "performed_at applies to one set at a time; to move a whole workout, use workout_update with shift_sets",
+        ));
     }
     let mut tx = db::begin(app, owner).await?;
     let exercise_id = match &a.exercise {
