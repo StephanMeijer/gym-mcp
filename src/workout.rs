@@ -4,6 +4,8 @@ use chrono::{DateTime, Duration, Utc};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
+// Dynamic SQL only interpolates compile-time constants; user input is always bound.
+use sqlx::AssertSqlSafe;
 
 use crate::db::{self, App, AppError, AppResult, Tx, user_err};
 use crate::resolve::{self, Kind};
@@ -108,9 +110,19 @@ pub async fn close_stale(app: &App, tx: &mut Tx, owner: &str, save: bool) -> App
     })))
 }
 
+/// A set's own fields as `json_build_object` arguments, for `workout_set` aliased `s`. Every view of a set
+/// (workout, last_session, set_search) uses it, so a new column is added in one place.
+pub const SET_JSON: &str = "'reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
+    'rpe', s.rpe, 'rest_s', s.rest_s, 'set_type', s.set_type, 'unilateral', s.unilateral, 'load_basis', s.load_basis,
+    'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
+    'avg_hr', s.avg_hr, 'max_hr', s.max_hr, 'calories', s.calories,
+    'avg_incline_pct', s.avg_incline_pct, 'max_incline_pct', s.max_incline_pct,
+    'avg_speed_kmh', s.avg_speed_kmh, 'max_speed_kmh', s.max_speed_kmh,
+    'machine', s.machine, 'variant', s.variant, 'time_estimated', s.time_estimated, 'notes', NULLIF(s.notes, '')";
+
 /// The full view of one workout: sets grouped by exercise, numbered by performed_at.
 pub async fn workout_json(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResult<Value> {
-    let v: Option<Value> = sqlx::query_scalar(
+    let v: Option<Value> = sqlx::query_scalar(AssertSqlSafe(format!(
         "SELECT json_build_object(
             'workout_id', w.id,
             'gym', json_build_object('id', g.id, 'name', g.name),
@@ -129,23 +141,15 @@ pub async fn workout_json(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResul
                                'exercise', e.name,
                                'sets', json_agg(json_build_object(
                                    'set_id', s.id, 'set_number', s.n, 'performed_at', s.performed_at,
-                                   'reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
-                                   'rpe', s.rpe, 'rest_s', s.rest_s, 'set_type', s.set_type,
-                                   'unilateral', s.unilateral, 'load_basis', s.load_basis,
-                                   'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
-                                   'avg_hr', s.avg_hr, 'max_hr', s.max_hr, 'calories', s.calories,
-                                   'avg_incline_pct', s.avg_incline_pct, 'max_incline_pct', s.max_incline_pct,
-                                   'avg_speed_kmh', s.avg_speed_kmh, 'max_speed_kmh', s.max_speed_kmh,
-                                   'machine', s.machine, 'variant', s.variant, 'time_estimated', s.time_estimated,
-                                   'notes', NULLIF(s.notes, '')) ORDER BY s.performed_at, s.id)) AS obj
+                                   {SET_JSON}) ORDER BY s.performed_at, s.id)) AS obj
                     FROM (SELECT ws.*, row_number() OVER (PARTITION BY ws.exercise_id ORDER BY ws.performed_at, ws.id) AS n
                           FROM workout_set ws WHERE ws.workout_id = w.id) s
                     JOIN exercise e ON e.id = s.exercise_id
                     GROUP BY e.id, e.name
                 ) x), '[]'::json))
          FROM workout w JOIN gym g ON g.id = w.gym_id
-         WHERE w.id = $1 AND w.owner_sub = $2",
-    )
+         WHERE w.id = $1 AND w.owner_sub = $2"
+    )))
     .bind(workout_id)
     .bind(owner)
     .fetch_optional(&mut **tx)
