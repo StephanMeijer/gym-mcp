@@ -12,7 +12,7 @@ use sqlx::{Postgres, QueryBuilder};
 use crate::db::{self, App, AppResult, Tx, user_err};
 use crate::resolve::{self, Kind};
 use crate::setup::{self, MUSCLE_GROUPS, expand_opt};
-use crate::workout;
+use crate::workout::{self, SET_JSON};
 
 // Macros so the consts below can be built with concat! and stay const.
 // The load one side moved: a unilateral set logged as a total is split over both sides.
@@ -73,7 +73,7 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
     let gym_id = gym_or_current(&mut tx, owner, &a.gym)
         .await?
         .ok_or_else(|| user_err("no open workout; pass a gym"))?;
-    let mut v: Value = sqlx::query_scalar(
+    let mut v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
         "WITH mine AS (SELECT s.*, w.gym_id FROM workout_set s JOIN workout w ON w.id = s.workout_id WHERE w.owner_sub = $1),
          -- warm-ups and cut-short sets only count for machine memory
          work AS (SELECT * FROM mine WHERE set_type = 'working'),
@@ -98,14 +98,7 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                    json_build_object(
                        'date', min(s.performed_at)::date,
                        'gym', (SELECT name FROM gym WHERE id = min(s.gym_id)),
-                       'sets', json_agg(json_build_object('reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
-                                                          'rpe', s.rpe, 'rest_s', s.rest_s, 'distance_m', s.distance_m,
-                                                          'avg_hr', s.avg_hr, 'max_hr', s.max_hr, 'calories', s.calories,
-                                                          'avg_incline_pct', s.avg_incline_pct, 'max_incline_pct', s.max_incline_pct,
-                                                          'avg_speed_kmh', s.avg_speed_kmh, 'max_speed_kmh', s.max_speed_kmh,
-                                                          'intensity', NULLIF(s.intensity, ''), 'machine', s.machine,
-                                                          'variant', s.variant, 'unilateral', s.unilateral, 'load_basis', s.load_basis)
-                                                          ORDER BY s.performed_at)) AS last
+                       'sets', json_agg(json_build_object({SET_JSON}) ORDER BY s.performed_at)) AS last
             FROM picked s
             GROUP BY s.exercise_id)
          SELECT json_build_object(
@@ -135,7 +128,7 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                                          'secondary_muscle_groups', e.secondary_muscle_groups))
                 FROM (SELECT exercise_id, count(*) n FROM work WHERE performed_at::date = current_date GROUP BY exercise_id) t
                 JOIN exercise e ON e.id = t.exercise_id), '[]'::json))"
-    )
+    )))
     .bind(owner)
     .bind(gym_id)
     .fetch_one(&mut *tx)
@@ -383,13 +376,8 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
 
     let mut q: QueryBuilder<Postgres> = QueryBuilder::new(format!(
         "SELECT json_build_object('set_id', s.id, 'workout_id', w.id, 'gym', g.name, 'exercise', e.name,
-                'performed_at', s.performed_at, 'reps', s.reps, 'weight_kg', s.weight_kg, 'duration_s', s.duration_s,
-                'rpe', s.rpe, 'rest_s', s.rest_s, 'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
-                'avg_hr', s.avg_hr, 'max_hr', s.max_hr, 'calories', s.calories,
-                'avg_incline_pct', s.avg_incline_pct, 'max_incline_pct', s.max_incline_pct,
-                'avg_speed_kmh', s.avg_speed_kmh, 'max_speed_kmh', s.max_speed_kmh,
-                'set_type', s.set_type, 'unilateral', s.unilateral, 'load_basis', s.load_basis,
-                'machine', s.machine, 'variant', s.variant, 'time_estimated', s.time_estimated, 'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
+                'performed_at', s.performed_at, {SET_JSON},
+                'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1))
          FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN gym g ON g.id = w.gym_id
          JOIN exercise e ON e.id = s.exercise_id
          WHERE w.owner_sub = "
