@@ -6,8 +6,7 @@ use serde_json::{Value, json};
 use sqlx::AssertSqlSafe;
 
 use crate::db::{self, App, AppResult, Tx, user_err};
-use crate::measurement::measured_at;
-use crate::workout::{now, workout_json};
+use crate::workout::{now, optional_past_time, workout_json};
 
 /// The JSON of one `body_note` row.
 const ROW: &str = "json_build_object('id', id, 'noted_at', noted_at, 'location', location, 'severity', severity,
@@ -41,7 +40,7 @@ pub struct BodyNoteAddArgs {
 pub async fn body_note_add(app: &App, owner: &str, a: BodyNoteAddArgs) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
     check_workout(&mut tx, owner, a.workout_id).await?;
-    let at = match measured_at(&mut tx, &a.noted_at).await? {
+    let at = match optional_past_time(&mut tx, &a.noted_at).await? {
         Some(at) => at,
         None => now(&mut tx).await?,
     };
@@ -103,7 +102,7 @@ pub struct BodyNoteUpdateArgs {
 pub async fn body_note_update(app: &App, owner: &str, a: BodyNoteUpdateArgs) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
     check_workout(&mut tx, owner, a.workout_id).await?;
-    let at = measured_at(&mut tx, &a.noted_at).await?;
+    let at = optional_past_time(&mut tx, &a.noted_at).await?;
     let v: Option<Value> = sqlx::query_scalar(AssertSqlSafe(format!(
         "UPDATE body_note SET location = coalesce(lower(btrim($3)), location), severity = coalesce($4, severity),
                               noted_at = coalesce($5, noted_at), notes = coalesce($6, notes),

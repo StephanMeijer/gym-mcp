@@ -158,6 +158,14 @@ pub(crate) async fn parse_time(tx: &mut Tx, s: &str) -> AppResult<DateTime<Utc>>
         .await?)
 }
 
+/// Parses an optional time and rejects one in the future.
+pub(crate) async fn optional_past_time(tx: &mut Tx, s: &Option<String>) -> AppResult<Option<DateTime<Utc>>> {
+    let Some(s) = s else { return Ok(None) };
+    let at = parse_time(tx, s).await?;
+    not_future(at, now(tx).await?)?;
+    Ok(Some(at))
+}
+
 pub(crate) async fn now(tx: &mut Tx) -> AppResult<DateTime<Utc>> {
     Ok(sqlx::query_scalar("SELECT now()").fetch_one(&mut **tx).await?)
 }
