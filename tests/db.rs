@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, DurationRound, Utc};
 use gym_mcp::db::{App, AppError};
-use gym_mcp::{measurement, search, setup, workout};
+use gym_mcp::{body_note, measurement, search, setup, workout};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -1871,4 +1871,83 @@ async fn estimated_times_clear_on_a_real_time(pool: PgPool) {
     .unwrap();
     assert_eq!(w["time_estimated"], false);
     assert_eq!(flags(&w), [json!(true), json!(false)]);
+}
+
+#[sqlx::test]
+async fn body_notes_round_trip(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    let w = workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    let wid = w["workout"]["workout_id"].as_i64().unwrap();
+    let old = body_note::body_note_add(
+        &app,
+        ME,
+        a(json!({"location": "Left knee ", "severity": 3, "noted_at": hours_ago(20 * 24)})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(old["location"], "left knee");
+    let new = body_note::body_note_add(
+        &app,
+        ME,
+        a(json!({"location": "lower_back", "notes": "tired after deadlifts", "workout_id": wid})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(new["workout_id"], wid);
+    assert!(new["severity"].is_null());
+    let id = new["id"].as_i64().unwrap();
+
+    let list = body_note::body_note_list(&app, ME, a(json!({}))).await.unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    assert_eq!(list[0]["id"], id, "newest first");
+    let knee = body_note::body_note_list(&app, ME, a(json!({"location": "KNEE"})))
+        .await
+        .unwrap();
+    assert_eq!(knee.as_array().unwrap().len(), 1);
+
+    let up = body_note::body_note_update(&app, ME, a(json!({"id": id, "severity": 6})))
+        .await
+        .unwrap();
+    assert_eq!(up["severity"], 6);
+    assert_eq!(up["notes"], "tired after deadlifts", "unset fields stay");
+    let msg = user_msg(body_note::body_note_update(&app, ME, a(json!({"id": id, "severity": 11}))).await);
+    assert!(msg.contains("invalid value"), "{msg}");
+    let cleared = body_note::body_note_update(&app, ME, a(json!({"id": id, "severity": 0, "workout_id": 0})))
+        .await
+        .unwrap();
+    assert!(cleared["severity"].is_null(), "0 clears severity");
+    assert!(cleared["workout_id"].is_null(), "0 unlinks the workout");
+
+    let o = search::training_overview(&app, ME, a(json!({"gym": "ndsm"})))
+        .await
+        .unwrap();
+    let recent = o["overview"]["body_notes"].as_array().unwrap();
+    assert_eq!(recent.len(), 1, "only the last 14 days");
+    assert_eq!(recent[0]["location"], "lower_back");
+
+    assert_eq!(
+        body_note::body_note_list(&app, "bob", a(json!({}))).await.unwrap(),
+        json!([])
+    );
+    let msg = user_msg(body_note::body_note_update(&app, "bob", a(json!({"id": id, "severity": 1}))).await);
+    assert!(msg.contains("no body note"), "{msg}");
+    let msg = user_msg(body_note::body_note_delete(&app, "bob", a(json!({"id": id}))).await);
+    assert!(msg.contains("no body note"), "{msg}");
+    let msg = user_msg(body_note::body_note_add(&app, "bob", a(json!({"location": "neck", "workout_id": wid}))).await);
+    assert!(msg.contains("no workout"), "{msg}");
+
+    let d = body_note::body_note_delete(&app, ME, a(json!({"id": id})))
+        .await
+        .unwrap();
+    assert_eq!(d["deleted"]["id"], id);
+    assert_eq!(
+        body_note::body_note_list(&app, ME, a(json!({})))
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }

@@ -6,7 +6,7 @@ use serde_json::Value;
 use sqlx::AssertSqlSafe;
 
 use crate::db::{self, App, AppResult, Tx, user_err};
-use crate::workout::{not_future, now, parse_time};
+use crate::workout::{now, optional_past_time};
 
 const KG_PER_LB: f64 = 0.453_592_37;
 const CM_PER_IN: f64 = 2.54;
@@ -105,13 +105,6 @@ fn convert(kind: MeasurementKind, value: f64, unit: Option<Unit>) -> AppResult<f
     }
 }
 
-async fn measured_at(tx: &mut Tx, s: &Option<String>) -> AppResult<Option<chrono::DateTime<chrono::Utc>>> {
-    let Some(s) = s else { return Ok(None) };
-    let at = parse_time(tx, s).await?;
-    not_future(at, now(tx).await?)?;
-    Ok(Some(at))
-}
-
 #[derive(Deserialize, JsonSchema)]
 pub struct MeasurementAddArgs {
     /// The value in `unit` ("82.4", or 180 with unit lb).
@@ -129,7 +122,7 @@ pub struct MeasurementAddArgs {
 
 pub async fn measurement_add(app: &App, owner: &str, a: MeasurementAddArgs) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
-    let at = match measured_at(&mut tx, &a.measured_at).await? {
+    let at = match optional_past_time(&mut tx, &a.measured_at).await? {
         Some(at) => at,
         None => now(&mut tx).await?,
     };
@@ -197,7 +190,7 @@ pub async fn measurement_update(app: &App, owner: &str, a: MeasurementUpdateArgs
         .await?;
     let kind = MeasurementKind::from_db(&kind.ok_or_else(|| user_err(format!("no measurement with id {}", a.id)))?)?;
     let value = a.value.map(|v| convert(kind, v, a.unit)).transpose()?;
-    let at = measured_at(&mut tx, &a.measured_at).await?;
+    let at = optional_past_time(&mut tx, &a.measured_at).await?;
     let v: Option<Value> = sqlx::query_scalar(AssertSqlSafe(format!(
         "UPDATE measurement SET value = coalesce($3, value), measured_at = coalesce($4, measured_at),
                                 notes = coalesce($5, notes)

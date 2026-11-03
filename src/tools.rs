@@ -7,6 +7,7 @@ use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use serde_json::Value;
 
 use crate::auth::Owner;
+use crate::body_note::*;
 use crate::db::{App, AppError, AppResult};
 use crate::measurement::*;
 use crate::search::*;
@@ -70,6 +71,11 @@ Also log waist_circumference (cm, at the navel), body_fat (%), resting_heart_rat
 has the latest of each with its 28-day average: waist down at stable weight = recomposition; resting heart rate \
 5+ bpm above its average = fatigue or illness, suggest a lighter session. Don't diagnose blood pressure; if it's \
 high, suggest seeing a doctor and take it into account like a limitation.
+Body notes: when the user mentions pain, an ache or fatigue (\"lower back tired tonight\"), body_note_add with a \
+location (a muscle group name where it fits, else free text like \"left knee\") and severity 1-10 if they give one or \
+it's clear. training_overview.body_notes has the last 14 days: avoid loading a sore area, suggest lighter work or \
+alternatives, and point out repeats (body_note_list for longer patterns). Don't diagnose; for sharp or lasting pain, \
+suggest seeing a professional.
 Times: answers are in the user's timezone; inputs may be RFC 3339 or local (\"2026-11-02 19:40\").
 Photos stay with you; send only text.";
 
@@ -385,9 +391,60 @@ impl GymServer {
         call!(self, p, measurement_delete, a)
     }
 
+    // ----- body notes -----
+    #[tool(
+        description = "Log an ache, pain or fatigue: where, how bad (1-10), when, and optionally the workout it came up in.",
+        annotations(
+            title = "Log body note",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn body_note_add(&self, p: P, a: Parameters<BodyNoteAddArgs>) -> R {
+        call!(self, p, body_note_add, a)
+    }
+
+    #[tool(
+        description = "Body notes over time, newest first, optionally by location and within from-to.",
+        annotations(title = "List body notes", read_only_hint = true, open_world_hint = false)
+    )]
+    async fn body_note_list(&self, p: P, a: Parameters<BodyNoteListArgs>) -> R {
+        call!(self, p, body_note_list, a)
+    }
+
+    #[tool(
+        description = "Correct a body note's location, severity, time, notes or workout.",
+        annotations(
+            title = "Correct body note",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn body_note_update(&self, p: P, a: Parameters<BodyNoteUpdateArgs>) -> R {
+        call!(self, p, body_note_update, a)
+    }
+
+    #[tool(
+        description = "Delete a body note.",
+        annotations(
+            title = "Delete body note",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn body_note_delete(&self, p: P, a: Parameters<BodyNoteDeleteArgs>) -> R {
+        call!(self, p, body_note_delete, a)
+    }
+
     // ----- search & analysis -----
     #[tool(
-        description = "Everything needed to recommend what to do next at a gym: its equipment text, every exercise with its equipment text and last session, per-muscle recency, weekly/4-week weighted sets, training days and RPE, today's work, the goal, the latest body weight with its 4-week change, and the latest of every other measurement with its 28-day average.",
+        description = "Everything needed to recommend what to do next at a gym: its equipment text, every exercise with its equipment text and last session, per-muscle recency, weekly/4-week weighted sets, training days and RPE, today's work, the goal, the latest body weight with its 4-week change, and the latest of every other measurement with its 28-day average, and body notes from the last 14 days.",
         annotations(title = "Training overview", read_only_hint = true, open_world_hint = false)
     )]
     async fn training_overview(&self, p: P, a: Parameters<OverviewArgs>) -> R {
@@ -463,7 +520,7 @@ mod tests {
     #[test]
     fn every_tool_is_annotated_and_closed_world() {
         let tools = GymServer::tool_router().list_all();
-        assert_eq!(tools.len(), 29);
+        assert_eq!(tools.len(), 33);
         for t in &tools {
             let a = t
                 .annotations
