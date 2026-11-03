@@ -32,11 +32,18 @@ fn parse_duration(s: &str) -> anyhow::Result<Duration> {
         .trim()
         .parse::<u64>()
         .with_context(|| format!("bad duration {s:?}"))?;
-    Ok(Duration::from_secs(
-        n.checked_mul(mult)
-            .with_context(|| format!("duration {s:?} too large"))?,
-    ))
+    let secs = n
+        .checked_mul(mult)
+        .with_context(|| format!("duration {s:?} too large"))?;
+    // Larger values break the `now - stale_after` timestamp arithmetic in close_stale.
+    anyhow::ensure!(
+        secs <= MAX_STALE_AFTER_SECS,
+        "WORKOUT_STALE_AFTER must be at most 365 days, got {s:?}"
+    );
+    Ok(Duration::from_secs(secs))
 }
+
+const MAX_STALE_AFTER_SECS: u64 = 365 * 24 * 3600;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -115,5 +122,10 @@ mod tests {
         }
         let err = parse_duration("5124095576030432h").unwrap_err().to_string();
         assert!(err.contains("too large"), "{err}");
+        assert_eq!(parse_duration("8760h").unwrap(), Duration::from_secs(365 * 24 * 3600));
+        for bad in ["8761h", "31536001", "9300000000000000"] {
+            let err = parse_duration(bad).unwrap_err().to_string();
+            assert!(err.contains("at most 365 days"), "{bad:?}: {err}");
+        }
     }
 }
