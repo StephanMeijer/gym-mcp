@@ -305,17 +305,24 @@ mod tests {
 
     #[test]
     fn stored_units_match_the_schema() {
-        // The (kind, unit) pairs measurement_check allows (migration 0011).
-        for (kind, unit) in [
-            (MeasurementKind::BodyWeight, "kg"),
-            (MeasurementKind::BodyHeight, "cm"),
-            (MeasurementKind::WaistCircumference, "cm"),
-            (MeasurementKind::BodyFat, "%"),
-            (MeasurementKind::RestingHeartRate, "bpm"),
-            (MeasurementKind::BloodPressureSystolic, "mmHg"),
-            (MeasurementKind::BloodPressureDiastolic, "mmHg"),
+        // The (kind, unit) pairs measurement_check allows (migration 0011). No wildcard: a new kind must add its pair.
+        let schema_unit = |kind: MeasurementKind| match kind {
+            MeasurementKind::BodyWeight => "kg",
+            MeasurementKind::BodyHeight | MeasurementKind::WaistCircumference => "cm",
+            MeasurementKind::BodyFat => "%",
+            MeasurementKind::RestingHeartRate => "bpm",
+            MeasurementKind::BloodPressureSystolic | MeasurementKind::BloodPressureDiastolic => "mmHg",
+        };
+        for kind in [
+            MeasurementKind::BodyWeight,
+            MeasurementKind::BodyHeight,
+            MeasurementKind::WaistCircumference,
+            MeasurementKind::BodyFat,
+            MeasurementKind::RestingHeartRate,
+            MeasurementKind::BloodPressureSystolic,
+            MeasurementKind::BloodPressureDiastolic,
         ] {
-            assert_eq!(kind.unit(), unit, "{}", kind.as_str());
+            assert_eq!(kind.unit(), schema_unit(kind), "{}", kind.as_str());
         }
     }
 }
