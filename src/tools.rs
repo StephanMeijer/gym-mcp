@@ -472,7 +472,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Find sets by exercise, muscle group, equipment, gym, date range, weight and reps; sort by date, weight, reps, volume or estimated 1RM.",
+        description = "Find sets by exercise, muscle group, equipment, gym, date range, weight and reps; sort by date, weight, reps, volume, estimated 1RM, or for cardio distance or pace.",
         annotations(title = "Find sets", read_only_hint = true, open_world_hint = false)
     )]
     async fn set_search(&self, p: P, a: Parameters<SetSearchArgs>) -> R {
@@ -480,7 +480,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Time series per day/week/month of top weight, estimated 1RM, volume, sets or reps, for an exercise or a muscle group.",
+        description = "Time series per day/week/month of top weight, estimated 1RM, volume, sets or reps, or for cardio distance, duration, pace, average heart rate, average speed or calories, for an exercise or a muscle group.",
         annotations(title = "Progress over time", read_only_hint = true, open_world_hint = false)
     )]
     async fn progress(&self, p: P, a: Parameters<ProgressArgs>) -> R {
@@ -488,7 +488,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "Personal records per exercise: heaviest set, best estimated 1RM, max reps at each weight, best volume workout.",
+        description = "Personal records per exercise: heaviest set, best estimated 1RM, max reps at each weight, best volume workout; for cardio longest distance, best pace and longest duration.",
         annotations(title = "Personal records", read_only_hint = true, open_world_hint = false)
     )]
     async fn personal_records(&self, p: P, a: Parameters<RecordsArgs>) -> R {
