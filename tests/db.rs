@@ -103,6 +103,27 @@ async fn start_resumes_same_gym_and_guards_other_gym(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn finish_closes_the_open_workout_but_not_before_its_last_set(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    workout::set_add(&app, ME, a(json!({"exercise": "push-up", "sets": [{"reps": 20}]})))
+        .await
+        .unwrap();
+
+    let msg = user_msg(workout::finish(&app, ME, a(json!({"finished_at": hours_ago(1)}))).await);
+    assert!(msg.contains("before the last logged set"), "{msg}");
+
+    let fin = workout::finish(&app, ME, a(json!({}))).await.unwrap();
+    assert_eq!(fin["status"], "finished");
+    assert_eq!(fin["workout"]["finish_reason"], "manual");
+    assert!(!fin["workout"]["finished_at"].is_null());
+
+    let msg = user_msg(workout::finish(&app, ME, a(json!({}))).await);
+    assert!(msg.contains("no open workout"), "{msg}");
+}
+
+#[sqlx::test]
 async fn stale_workout_with_sets_closes_at_last_set(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
