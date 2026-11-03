@@ -294,7 +294,9 @@ pub async fn search(app: &App, owner: &str, a: SearchArgs) -> AppResult<Value> {
     names.truncate(lim as usize);
     let notes: Value = sqlx::query_scalar(
         "WITH q AS (SELECT websearch_to_tsquery('simple', $2) AS q)
-         SELECT coalesce(json_agg(h ORDER BY h->>'rank' DESC), '[]'::json) FROM (
+         -- rank as a number, and before the limit, so the best matches are the ones kept
+         SELECT coalesce(json_agg(h ORDER BY r DESC), '[]'::json) FROM (
+          SELECT h, (h->>'rank')::float8 AS r FROM (
             SELECT json_build_object('type', 'gym', 'id', g.id, 'name', g.name, 'text', g.notes, 'rank', ts_rank(g.notes_tsv, q.q)) h
             FROM gym g, q WHERE g.owner_sub = $1 AND g.notes_tsv @@ q.q
             UNION ALL
@@ -316,8 +318,8 @@ pub async fn search(app: &App, owner: &str, a: SearchArgs) -> AppResult<Value> {
                                      'performed_at', s.performed_at, 'reps', s.reps, 'weight_kg', s.weight_kg,
                                      'text', s.notes, 'rank', ts_rank(s.notes_tsv, q.q))
             FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN exercise e ON e.id = s.exercise_id, q
-            WHERE w.owner_sub = $1 AND s.notes_tsv @@ q.q
-            LIMIT $3) x",
+            WHERE w.owner_sub = $1 AND s.notes_tsv @@ q.q) u
+          ORDER BY r DESC LIMIT $3) x",
     )
     .bind(owner)
     .bind(&a.query)
