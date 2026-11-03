@@ -365,6 +365,36 @@ async fn search_ranks_notes_before_limiting(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn exercise_search_lists_every_match(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    for name in ["Dumbbell row", "Dumbbell shoulder press"] {
+        setup::exercise_create(&app, ME, a(json!({"name": name})))
+            .await
+            .unwrap();
+    }
+    let ex = setup::exercise_search(&app, ME, a(json!({"query": "dumbbell"})))
+        .await
+        .unwrap();
+    let mut names: Vec<&str> = ex
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names[0], "Dumbbell row", "closest first (fewest extra words)");
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        ["Dumbbell bench press", "Dumbbell row", "Dumbbell shoulder press"],
+        "not just the closest one"
+    );
+    let id = ex[0]["id"].to_string();
+    let by_id = setup::exercise_search(&app, ME, a(json!({"query": id}))).await.unwrap();
+    assert_eq!(by_id[0]["name"], "Dumbbell row");
+}
+
+#[sqlx::test]
 async fn owners_are_isolated(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
