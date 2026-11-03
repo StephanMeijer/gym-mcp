@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/StephanMeijer/gym-mcp/compare/v0.4.3...v0.4.4) - 2026-11-03
+
+### Fixed
+
+- *(config)* cap WORKOUT_STALE_AFTER at 365 days
+- *(config)* reject a WORKOUT_STALE_AFTER that overflows
+
+### Other
+
+- Merge pull request #70 from StephanMeijer/fix/stale-after-overflow
+
 ## [0.4.3](https://github.com/StephanMeijer/gym-mcp/compare/v0.4.2...v0.4.3) - 2026-11-03
 
 ### Other
