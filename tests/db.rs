@@ -155,6 +155,28 @@ async fn stale_empty_workout_is_deleted_and_set_add_refuses(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn stale_workout_with_only_a_body_note_is_kept(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    let w = workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(4)})))
+        .await
+        .unwrap();
+    let wid = w["workout"]["workout_id"].clone();
+    body_note::body_note_add(
+        &app,
+        ME,
+        a(json!({"location": "lower_back", "severity": 7, "workout_id": wid, "noted_at": hours_ago(4)})),
+    )
+    .await
+    .unwrap();
+    // The ache is the only record of this visit: finish the workout instead of deleting it and orphaning the note.
+    let next = workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    assert_eq!(next["closed_stale"]["action"], "auto-finished (stale)");
+    let notes = body_note::body_note_list(&app, ME, a(json!({}))).await.unwrap();
+    assert_eq!(notes[0]["workout_id"], wid);
+}
+
+#[sqlx::test]
 async fn late_sets_order_and_move_start_back(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
