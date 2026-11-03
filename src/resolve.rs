@@ -37,6 +37,8 @@ pub enum Outcome {
 }
 
 const ACCEPT: f64 = 0.55;
+/// A name scoring at least this is worth listing in search results; ACCEPT is the stricter bar for picking one.
+pub const LIST: f64 = 0.5;
 const MARGIN: f64 = 0.08;
 
 fn words(s: &str) -> Vec<String> {
