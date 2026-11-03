@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use axum::{Router, middleware, routing::get};
 use gym_mcp::{
     auth::{self, Auth},
     db::App,
@@ -79,13 +78,7 @@ async fn main() -> anyhow::Result<()> {
             .with_allowed_hosts([host.as_str(), "localhost", "127.0.0.1"]),
     );
 
-    let router = Router::new()
-        .nest_service("/mcp", mcp)
-        .layer(middleware::from_fn_with_state(auth.clone(), auth::require_bearer))
-        .route("/.well-known/oauth-protected-resource", get(auth::metadata))
-        .route("/.well-known/oauth-protected-resource/mcp", get(auth::metadata))
-        .route("/healthz", get(|| async { "ok" }))
-        .with_state(auth);
+    let router = auth::router(axum::Router::new().fallback_service(mcp), auth);
 
     let bind = env_or("BIND_ADDR", "0.0.0.0:8080");
     tracing::info!("listening on {bind}, MCP at {public_url}/mcp");

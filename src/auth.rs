@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
-use axum::middleware::Next;
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use axum::routing::{Router, get};
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::Deserialize;
@@ -208,6 +209,17 @@ pub async fn require_bearer(State(auth): State<Arc<Auth>>, mut req: Request, nex
     }
 }
 
+/// The HTTP surface: `mcp` behind the bearer check; metadata and health stay open.
+pub fn router(mcp: Router, auth: Arc<Auth>) -> Router {
+    Router::new()
+        .nest_service("/mcp", mcp)
+        .layer(middleware::from_fn_with_state(auth.clone(), require_bearer))
+        .route("/.well-known/oauth-protected-resource", get(metadata))
+        .route("/.well-known/oauth-protected-resource/mcp", get(metadata))
+        .route("/healthz", get(|| async { "ok" }))
+        .with_state(auth)
+}
+
 fn unauthorized(auth: &Auth, error: Option<&str>) -> Response {
     let mut challenge = format!("Bearer resource_metadata=\"{}\"", auth.metadata_url());
     if let Some(e) = error {
@@ -281,6 +293,86 @@ mod tests {
         let other = auth.validate(&token(&base, "other")).await;
         assert!(matches!(other, Err(TokenError::UnknownKid(_))), "{other:?}");
         assert_eq!(hits.load(SeqCst), 2, "no second fetch within a minute");
+    }
+
+    /// Serves `router` with a stub /mcp that answers with the caller's sub. Returns its URL.
+    async fn serve(auth: Auth) -> String {
+        let mcp = Router::new().route(
+            "/",
+            get(|axum::Extension(o): axum::Extension<Owner>| async move { o.0 }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let app = router(mcp, Arc::new(auth));
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
+    #[tokio::test]
+    async fn mcp_requires_a_valid_bearer_token() {
+        let (base, _) = issuer(None).await;
+        let url = serve(Auth::discover(base.clone(), AUD.into()).await.unwrap()).await;
+        let http = reqwest::Client::new();
+        let challenge = |r: &reqwest::Response| r.headers()[header::WWW_AUTHENTICATE].to_str().unwrap().to_owned();
+
+        let none = http.get(format!("{url}/mcp")).send().await.unwrap();
+        assert_eq!(none.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            challenge(&none),
+            format!("Bearer resource_metadata=\"{AUD}/.well-known/oauth-protected-resource\"")
+        );
+
+        let bad = http
+            .get(format!("{url}/mcp"))
+            .bearer_auth("garbage")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            challenge(&bad).ends_with(", error=\"invalid_token\""),
+            "{}",
+            challenge(&bad)
+        );
+
+        let ok = http
+            .get(format!("{url}/mcp"))
+            .bearer_auth(token(&base, "test"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        assert_eq!(ok.text().await.unwrap(), "alice");
+    }
+
+    #[tokio::test]
+    async fn metadata_and_health_need_no_token() {
+        let (base, _) = issuer(None).await;
+        let url = serve(Auth::discover(base.clone(), AUD.into()).await.unwrap()).await;
+        for path in [
+            "/healthz",
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-protected-resource/mcp",
+        ] {
+            let r = reqwest::get(format!("{url}{path}")).await.unwrap();
+            assert_eq!(r.status(), StatusCode::OK, "{path}");
+        }
+        let meta: serde_json::Value = reqwest::get(format!("{url}/.well-known/oauth-protected-resource"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(meta["resource"], AUD);
+        assert_eq!(meta["authorization_servers"], json!([base]));
+    }
+
+    #[tokio::test]
+    async fn dev_mode_acts_as_the_dev_sub_without_a_token() {
+        let url = serve(Auth::dev("dev".into(), AUD.into())).await;
+        let r = reqwest::get(format!("{url}/mcp")).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.text().await.unwrap(), "dev");
     }
 
     #[tokio::test]
