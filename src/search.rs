@@ -87,13 +87,12 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                   FROM mine WHERE gym_id = $2 GROUP BY exercise_id),
          -- the last session on that machine and variant at any gym (same brand compares across gyms), else the last session
          picked AS (
-            SELECT s.* FROM work s LEFT JOIN here h ON h.exercise_id = s.exercise_id
-            WHERE (h.machine IS NULL OR lower(s.machine) = lower(h.machine))
-              AND (h.exercise_id IS NULL OR lower(s.variant) IS NOT DISTINCT FROM lower(h.variant))
-              AND s.workout_id = (SELECT m.workout_id FROM work m
-                                  WHERE m.exercise_id = s.exercise_id AND (h.machine IS NULL OR lower(m.machine) = lower(h.machine))
-                                    AND (h.exercise_id IS NULL OR lower(m.variant) IS NOT DISTINCT FROM lower(h.variant))
-                                  ORDER BY m.performed_at DESC LIMIT 1)),
+            SELECT * FROM (
+                SELECT s.*, first_value(s.workout_id) OVER (PARTITION BY s.exercise_id ORDER BY s.performed_at DESC) AS last_w
+                FROM work s LEFT JOIN here h ON h.exercise_id = s.exercise_id
+                WHERE (h.machine IS NULL OR lower(s.machine) = lower(h.machine))
+                  AND (h.exercise_id IS NULL OR lower(s.variant) IS NOT DISTINCT FROM lower(h.variant))) t
+            WHERE workout_id = last_w),
          last_session AS (
             SELECT s.exercise_id,
                    json_build_object(
