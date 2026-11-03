@@ -2147,3 +2147,24 @@ async fn body_notes_round_trip(pool: PgPool) {
         1
     );
 }
+
+#[sqlx::test]
+async fn infinite_times_are_user_errors(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    let msg = user_msg(
+        workout::set_add(
+            &app,
+            ME,
+            a(json!({"exercise": "leg press", "sets": [{"reps": 5, "performed_at": "-infinity"}]})),
+        )
+        .await,
+    );
+    assert!(msg.contains("infinity"), "{msg}");
+    let msg =
+        user_msg(measurement::measurement_add(&app, ME, a(json!({"value": 80.0, "measured_at": "infinity"}))).await);
+    assert!(msg.contains("infinity"), "{msg}");
+    let msg = user_msg(search::muscle_group_volume(&app, ME, a(json!({"from": "-infinity"}))).await);
+    assert!(msg.contains("infinity"), "{msg}");
+}

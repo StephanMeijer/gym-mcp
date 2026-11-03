@@ -157,11 +157,15 @@ pub async fn workout_json(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResul
     v.ok_or_else(|| user_err(format!("no workout with id {workout_id}")))
 }
 
+pub(crate) const NOT_INFINITE: &str = "pass a real date and time, not infinity";
+
+/// Postgres accepts 'infinity' and '-infinity', which chrono can't hold (sqlx panics decoding them).
 pub(crate) async fn parse_time(tx: &mut Tx, s: &str) -> AppResult<DateTime<Utc>> {
-    Ok(sqlx::query_scalar("SELECT $1::timestamptz")
+    sqlx::query_scalar("SELECT t FROM (SELECT $1::timestamptz AS t) x WHERE isfinite(t)")
         .bind(s)
-        .fetch_one(&mut **tx)
-        .await?)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| user_err(NOT_INFINITE))
 }
 
 /// Parses an optional time and rejects one in the future.
