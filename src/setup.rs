@@ -464,11 +464,16 @@ pub async fn exercise_search(app: &App, owner: &str, a: ExerciseSearchArgs) -> A
             let cands = resolve::candidates(&mut tx, owner, Kind::Exercise).await?;
             Some(match q.trim().parse::<i64>() {
                 Ok(id) if cands.iter().any(|c| c.id == id) => vec![id],
-                _ => resolve::rank(q, &cands)
-                    .into_iter()
-                    .filter(|r| r.0 >= 0.5)
-                    .map(|r| r.1)
-                    .collect(),
+                _ => {
+                    let ranked = resolve::rank(q, &cands);
+                    let good: Vec<i64> = ranked.iter().filter(|r| r.0 >= 0.5).map(|r| r.1).collect();
+                    // No good match: still offer the closest few, so search-before-create doesn't come back empty.
+                    if good.is_empty() {
+                        ranked.iter().filter(|r| r.0 > 0.0).take(5).map(|r| r.1).collect()
+                    } else {
+                        good
+                    }
+                }
             })
         }
         None => None,

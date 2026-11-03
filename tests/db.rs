@@ -392,6 +392,10 @@ async fn exercise_search_lists_every_match(pool: PgPool) {
     let id = ex[0]["id"].to_string();
     let by_id = setup::exercise_search(&app, ME, a(json!({"query": id}))).await.unwrap();
     assert_eq!(by_id[0]["name"], "Dumbbell row");
+    let long = setup::exercise_search(&app, ME, a(json!({"query": "seated dumbbell row narrow grip"})))
+        .await
+        .unwrap();
+    assert_eq!(long[0]["name"], "Dumbbell row", "no good match still lists the closest");
 }
 
 #[sqlx::test]
