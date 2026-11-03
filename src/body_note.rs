@@ -93,20 +93,22 @@ pub async fn body_note_list(app: &App, owner: &str, a: BodyNoteListArgs) -> AppR
 pub struct BodyNoteUpdateArgs {
     pub id: i64,
     pub location: Option<String>,
+    /// 1-10; 0 clears it.
     pub severity: Option<i16>,
     pub noted_at: Option<String>,
     pub notes: Option<String>,
+    /// 0 unlinks it from its workout.
     pub workout_id: Option<i64>,
 }
 
 pub async fn body_note_update(app: &App, owner: &str, a: BodyNoteUpdateArgs) -> AppResult<Value> {
     let mut tx = db::begin(app, owner).await?;
-    check_workout(&mut tx, owner, a.workout_id).await?;
+    check_workout(&mut tx, owner, a.workout_id.filter(|&w| w != 0)).await?;
     let at = optional_past_time(&mut tx, &a.noted_at).await?;
     let v: Option<Value> = sqlx::query_scalar(AssertSqlSafe(format!(
-        "UPDATE body_note SET location = coalesce(lower(btrim($3)), location), severity = coalesce($4, severity),
+        "UPDATE body_note SET location = coalesce(lower(btrim($3)), location), severity = nullif(coalesce($4, severity), 0),
                               noted_at = coalesce($5, noted_at), notes = coalesce($6, notes),
-                              workout_id = coalesce($7, workout_id)
+                              workout_id = nullif(coalesce($7, workout_id), 0)
          WHERE id = $1 AND owner_sub = $2 RETURNING {ROW}"
     )))
     .bind(a.id)

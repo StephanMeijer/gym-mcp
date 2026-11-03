@@ -1913,6 +1913,11 @@ async fn body_notes_round_trip(pool: PgPool) {
     assert_eq!(up["notes"], "tired after deadlifts", "unset fields stay");
     let msg = user_msg(body_note::body_note_update(&app, ME, a(json!({"id": id, "severity": 11}))).await);
     assert!(msg.contains("invalid value"), "{msg}");
+    let cleared = body_note::body_note_update(&app, ME, a(json!({"id": id, "severity": 0, "workout_id": 0})))
+        .await
+        .unwrap();
+    assert!(cleared["severity"].is_null(), "0 clears severity");
+    assert!(cleared["workout_id"].is_null(), "0 unlinks the workout");
 
     let o = search::training_overview(&app, ME, a(json!({"gym": "ndsm"})))
         .await
