@@ -85,6 +85,11 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                          (array_agg(machine ORDER BY performed_at DESC) FILTER (WHERE machine IS NOT NULL))[1] AS machine,
                          (array_agg(variant ORDER BY performed_at DESC))[1] AS variant
                   FROM mine WHERE gym_id = $2 GROUP BY exercise_id),
+         -- every machine and variant ever used per exercise, in one pass over the history
+         used AS (SELECT exercise_id,
+                         array_agg(DISTINCT variant) FILTER (WHERE variant IS NOT NULL) AS variants,
+                         array_agg(DISTINCT machine) FILTER (WHERE machine IS NOT NULL) AS machines
+                  FROM mine GROUP BY exercise_id),
          -- the last session on that machine and variant at any gym (same brand compares across gyms), else the last session
          picked AS (
             SELECT * FROM (
@@ -110,13 +115,13 @@ pub async fn training_overview(app: &App, owner: &str, a: OverviewArgs) -> AppRe
                     'secondary_muscle_groups', e.secondary_muscle_groups,
                     'equipment', NULLIF(e.equipment, ''), 'last_done', st.last_done, 'days_since', current_date - st.last_done::date,
                     'machine_here', h.machine, 'variant_here', h.variant, 'last_session', ls.last,
-                    'variants_used', (SELECT array_agg(DISTINCT variant) FROM mine WHERE exercise_id = e.id AND variant IS NOT NULL),
-                    'machines_used', (SELECT array_agg(DISTINCT machine) FROM mine WHERE exercise_id = e.id AND machine IS NOT NULL), 'sets_last_30d', coalesce(st.sets_30d, 0))
+                    'variants_used', u.variants, 'machines_used', u.machines, 'sets_last_30d', coalesce(st.sets_30d, 0))
                     ORDER BY st.last_done NULLS FIRST, e.name)
                 FROM exercise e
                 LEFT JOIN stats st ON st.exercise_id = e.id
                 LEFT JOIN last_session ls ON ls.exercise_id = e.id
                 LEFT JOIN here h ON h.exercise_id = e.id
+                LEFT JOIN used u ON u.exercise_id = e.id
                 WHERE e.owner_sub = $1), '[]'::json),
             'cardio_this_week', (
                 SELECT json_build_object('minutes', round(coalesce(sum(s.duration_s), 0) / 60.0),
