@@ -68,7 +68,7 @@ DATABASE_URL=postgres://gym:gym@localhost:5432/gym cargo test
 | `OIDC_ISSUER` | required unless `DEV_SUB` is set; your Authelia URL, e.g. `https://auth.example.com` |
 | `BIND_ADDR` | default `0.0.0.0:8080` |
 | `DEFAULT_TIMEZONE` | default `Europe/Amsterdam` |
-| `WORKOUT_STALE_AFTER` | default `3h` (`90m` and `45s` also work) |
+| `WORKOUT_STALE_AFTER` | default `3h` (`90m` and `45s` also work); at most `8760h` (365 days) |
 | `DEV_SUB` | **local only**: turns off auth and acts as this user |
 
 Endpoints: `/mcp` (Streamable HTTP, stateless), `/.well-known/oauth-protected-resource`, `/healthz`. Put TLS in front, e.g. your ingress.
