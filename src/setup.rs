@@ -457,16 +457,29 @@ pub struct ExerciseSearchArgs {
 pub async fn exercise_search(app: &App, owner: &str, a: ExerciseSearchArgs) -> AppResult<Value> {
     let groups = expand_opt(&a.muscle_group)?;
     let mut tx = db::begin_read(app, owner).await?;
-    // Narrow by name with the resolver's scoring so "benchpres" still finds things.
+    // Narrow by name with the resolver's scoring so "benchpres" still finds things. Every good match, best
+    // first: `resolve` would pick one winner and hide the rest ("dumbbell" → only "Dumbbell row").
     let ids: Option<Vec<i64>> = match &a.query {
-        Some(q) => Some(match resolve::lookup(&mut tx, owner, Kind::Exercise, q).await? {
-            resolve::Outcome::Hit(id) => vec![id],
-            resolve::Outcome::Ambiguous(c) | resolve::Outcome::NotFound(c) => c.into_iter().map(|(id, _)| id).collect(),
-        }),
+        Some(q) => {
+            let cands = resolve::candidates(&mut tx, owner, Kind::Exercise).await?;
+            Some(match q.trim().parse::<i64>() {
+                Ok(id) if cands.iter().any(|c| c.id == id) => vec![id],
+                _ => {
+                    let ranked = resolve::rank(q, &cands);
+                    let good: Vec<i64> = ranked.iter().filter(|r| r.0 >= 0.5).map(|r| r.1).collect();
+                    // No good match: still offer the closest few, so search-before-create doesn't come back empty.
+                    if good.is_empty() {
+                        ranked.iter().filter(|r| r.0 > 0.0).take(5).map(|r| r.1).collect()
+                    } else {
+                        good
+                    }
+                }
+            })
+        }
         None => None,
     };
     let v: Value = sqlx::query_scalar(AssertSqlSafe(format!(
-        "SELECT coalesce(json_agg({EXERCISE_JSON} ORDER BY e.name), '[]'::json)
+        "SELECT coalesce(json_agg({EXERCISE_JSON} ORDER BY array_position($2::bigint[], e.id), e.name), '[]'::json)
          FROM exercise e
          WHERE e.owner_sub = $1
            AND ($2::bigint[] IS NULL OR e.id = ANY($2))
