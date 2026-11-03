@@ -61,6 +61,17 @@ jobs:
           components: rustfmt
       - run: cargo fmt --check
 
+  # Known vulnerabilities in the dependency tree; deny.toml lists the ones that don't reach us, and why.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
   # Build (don't push) both arches so a broken Dockerfile can't get tagged.
   docker-build:
     uses: ./.github/workflows/docker.yml
@@ -74,7 +85,7 @@ jobs:
   # release run would leave the version untagged until the next push.
   release-plz-release:
     name: Tag and release
-    needs: [test, clippy, fmt, docker-build]
+    needs: [test, clippy, fmt, audit, docker-build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'StephanMeijer/gym-mcp'
     runs-on: ubuntu-latest
     permissions:

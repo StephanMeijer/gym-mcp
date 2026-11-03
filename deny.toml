@@ -1,0 +1,12 @@
+# `cargo deny check advisories` runs in CI (ci.yml, job `audit`): a known vulnerability in the
+# dependency tree fails the build unless it is listed here with the reason it doesn't reach us.
+
+[advisories]
+ignore = [
+    # rsa (Marvin attack): timing leak when decrypting or signing with a private RSA key. jsonwebtoken pulls it
+    # in for its rust_crypto backend; we only verify signatures with Authelia's public keys. No fixed version.
+    { id = "RUSTSEC-2023-0071", reason = "only public-key signature verification; no private-key RSA operations" },
+    # crypto-bigint 0.5 (via p256/p384 in jsonwebtoken): non-constant-time arithmetic on secret integers.
+    # Verification handles only public values. Fixed in 0.7.6, which jsonwebtoken does not use yet.
+    { id = "RUSTSEC-2026-0387", reason = "only public-key signature verification; no secret integers" },
+]
