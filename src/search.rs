@@ -161,14 +161,14 @@ async fn window(
     let (lo, hi): (DateTime<Utc>, DateTime<Utc>) = sqlx::query_as(
         "SELECT lo, hi FROM (SELECT coalesce($1::timestamptz, now() - make_interval(days => $3::int)) AS lo,
                                     coalesce($2::timestamptz, now()) AS hi) x
-         WHERE isfinite(lo) AND isfinite(hi)",
+         WHERE isfinite(lo) AND isfinite(hi) AND lo < '200000-01-01' AND hi < '200000-01-01'",
     )
     .bind(from)
     .bind(to)
     .bind(days.map(|d| d as i32))
     .fetch_optional(&mut **tx)
     .await?
-    .ok_or_else(|| user_err(workout::NOT_INFINITE))?;
+    .ok_or_else(|| user_err(workout::OUT_OF_RANGE))?;
     if lo >= hi {
         return Err(user_err("from must be before to"));
     }

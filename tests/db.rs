@@ -2167,4 +2167,22 @@ async fn infinite_times_are_user_errors(pool: PgPool) {
     assert!(msg.contains("infinity"), "{msg}");
     let msg = user_msg(search::muscle_group_volume(&app, ME, a(json!({"from": "-infinity"}))).await);
     assert!(msg.contains("infinity"), "{msg}");
+    // Postgres goes to year 294276, chrono only to 262143.
+    let msg = user_msg(
+        workout::set_add(
+            &app,
+            ME,
+            a(json!({"exercise": "leg press", "sets": [{"reps": 5, "performed_at": "270000-01-01"}]})),
+        )
+        .await,
+    );
+    assert!(msg.contains("real date"), "{msg}");
+    let msg =
+        user_msg(search::muscle_group_volume(&app, ME, a(json!({"from": "2026-01-01", "to": "270000-01-01"}))).await);
+    assert!(msg.contains("real date"), "{msg}");
+    // Postgres' earliest time still fits chrono.
+    let v = search::muscle_group_volume(&app, ME, a(json!({"from": "4714-11-25 BC"})))
+        .await
+        .unwrap();
+    assert!(v.is_object(), "{v}");
 }
