@@ -13,6 +13,8 @@ Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles
 | **Workout** | one visit to one gym; at most one open at a time |
 | **Set** | reps / weight / duration, cardio `distance_m` and free-text `intensity` ("level 12"), the `machine` it was done on (brand; machine weights only compare within one brand, and it defaults to the last one used for that exercise at that gym), optional effort (`rpe` 1–10 in half steps) and `rest_s`; `performed_at` (when it happened) is separate from `logged_at` |
 | **Settings** | timezone, training `goal` (strength / hypertrophy / endurance / general), free-text `goals_notes` (plans, events, dates), `priority_muscle_groups` and `limitations` (injuries to work around) |
+| **Measurement** | one dated value of one kind, stored in one unit per kind: `body_weight` (kg; lb converted), `body_height` and `waist_circumference` (cm; in converted), `body_fat` (%), `resting_heart_rate` (bpm), `blood_pressure_systolic` / `_diastolic` (mmHg) |
+| **Body note** | a dated ache, pain or fatigue: `location` (a muscle group name or free text like "left knee"), optional `severity` 1–10, notes and the workout it came up in |
 
 **Recommendations.** `training_overview` gives Claude the gym's equipment text and, per exercise, its equipment text and the whole last session (reps, weight, RPE, rest), plus your goal, goals notes, priority muscle groups and limitations. Claude judges what's possible at the gym by reading the two texts, and suggests progression from the last session.
 
@@ -36,7 +38,8 @@ Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles
 |---|---|
 | Setup | `settings_get/update`, `gym_create/update/get/list`, `exercise_create/update/search` |
 | Workout | `workout_start/finish/update/current/add_past`, `workout_list`, `set_add/update/delete` |
-| Analysis | `training_overview`, `search`, `set_search`, `progress`, `personal_records`, `exercise_alternatives` |
+| Body | `measurement_add/list/update/delete`, `body_note_add/list/update/delete` |
+| Analysis | `training_overview`, `muscle_group_volume`, `search`, `set_search`, `progress`, `personal_records`, `exercise_alternatives` |
 
 Every tool carries MCP annotations, so clients can auto-approve reads and warn on deletes: a title, `readOnlyHint` (read tools run in a `READ ONLY` Postgres transaction, so the database enforces it), and `destructiveHint`/`idempotentHint` on the rest. All tools are `openWorldHint: false`, since they only touch this database.
 
