@@ -130,6 +130,9 @@ pub async fn workout_json(tx: &mut Tx, owner: &str, workout_id: i64) -> AppResul
                                    'rpe', s.rpe, 'rest_s', s.rest_s, 'set_type', s.set_type,
                                    'unilateral', s.unilateral, 'load_basis', s.load_basis,
                                    'distance_m', s.distance_m, 'intensity', NULLIF(s.intensity, ''),
+                                   'avg_hr', s.avg_hr, 'max_hr', s.max_hr, 'calories', s.calories,
+                                   'avg_incline_pct', s.avg_incline_pct, 'max_incline_pct', s.max_incline_pct,
+                                   'avg_speed_kmh', s.avg_speed_kmh, 'max_speed_kmh', s.max_speed_kmh,
                                    'machine', s.machine, 'variant', s.variant,
                                    'notes', NULLIF(s.notes, '')) ORDER BY s.performed_at, s.id)) AS obj
                     FROM (SELECT ws.*, row_number() OVER (PARTITION BY ws.exercise_id ORDER BY ws.performed_at, ws.id) AS n
@@ -434,6 +437,46 @@ impl LoadBasis {
 
 const LOAD_BASIS_NEEDS_UNILATERAL: &str = "load_basis applies only to unilateral sets; pass unilateral true";
 
+#[derive(Deserialize, JsonSchema, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeedUnit {
+    #[default]
+    Kmh,
+    Mph,
+}
+
+/// Cardio metrics, read off the machine's screen or a photo of it.
+#[derive(Deserialize, JsonSchema, Default)]
+pub struct CardioMetrics {
+    /// Average heart rate, bpm.
+    pub avg_hr: Option<i32>,
+    /// Maximum heart rate, bpm.
+    pub max_hr: Option<i32>,
+    /// kcal.
+    pub calories: Option<i32>,
+    /// Incline in percent; negative = decline.
+    pub avg_incline_pct: Option<f64>,
+    pub max_incline_pct: Option<f64>,
+    /// In speed_unit (default km/h).
+    pub avg_speed: Option<f64>,
+    pub max_speed: Option<f64>,
+    /// Unit of avg_speed / max_speed; mph is converted to km/h.
+    pub speed_unit: Option<SpeedUnit>,
+}
+
+const KM_PER_MILE: f64 = 1.609_344;
+
+impl CardioMetrics {
+    /// (avg, max) speed in km/h.
+    fn speeds_kmh(&self) -> (Option<f64>, Option<f64>) {
+        let f = match self.speed_unit.unwrap_or_default() {
+            SpeedUnit::Kmh => 1.0,
+            SpeedUnit::Mph => KM_PER_MILE,
+        };
+        (self.avg_speed.map(|v| v * f), self.max_speed.map(|v| v * f))
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct SetInput {
     pub reps: Option<i32>,
@@ -450,6 +493,8 @@ pub struct SetInput {
     pub rest_s: Option<i32>,
     /// Default working. Warm-ups and sets cut short don't count towards volume, progress or PRs.
     pub set_type: Option<SetType>,
+    #[serde(flatten)]
+    pub cardio: CardioMetrics,
     /// When the set was performed, if not just now. RFC 3339, or local time like "19:40" on a date: "2026-11-02 19:40".
     pub performed_at: Option<String>,
     pub notes: Option<String>,
@@ -605,10 +650,13 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
             None => now + Duration::milliseconds(i as i64),
         };
         fit_in_window(&mut tx, &mut t, at, now).await?;
+        let (avg_speed, max_speed) = s.cardio.speeds_kmh();
         sqlx::query(
             "INSERT INTO workout_set (workout_id, exercise_id, performed_at, reps, weight_kg, duration_s, rpe, rest_s, notes,
-                                      distance_m, intensity, machine, set_type, unilateral, load_basis, variant)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, coalesce($9, ''), $10, coalesce($11, ''), $12, $13, $14, NULLIF($15, 'default'), $16)",
+                                      distance_m, intensity, machine, set_type, unilateral, load_basis, variant,
+                                      avg_hr, max_hr, calories, avg_incline_pct, max_incline_pct, avg_speed_kmh, max_speed_kmh)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, coalesce($9, ''), $10, coalesce($11, ''), $12, $13, $14, NULLIF($15, 'default'), $16,
+                     $17, $18, $19, $20, $21, $22, $23)",
         )
         .bind(t.id)
         .bind(exercise_id)
@@ -626,6 +674,13 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         .bind(a.unilateral.unwrap_or(false))
         .bind(a.load_basis.map(LoadBasis::as_str))
         .bind(&variant)
+        .bind(s.cardio.avg_hr)
+        .bind(s.cardio.max_hr)
+        .bind(s.cardio.calories)
+        .bind(s.cardio.avg_incline_pct)
+        .bind(s.cardio.max_incline_pct)
+        .bind(avg_speed)
+        .bind(max_speed)
         .execute(&mut *tx)
         .await?;
     }
@@ -667,6 +722,8 @@ pub struct SetUpdateArgs {
     pub unilateral: Option<bool>,
     /// Only on unilateral sets; default = back to the default convention.
     pub load_basis: Option<LoadBasis>,
+    #[serde(flatten)]
+    pub cardio: CardioMetrics,
     pub performed_at: Option<String>,
     pub notes: Option<String>,
 }
@@ -772,6 +829,7 @@ async fn update_one(
         let mut t = target(tx, owner, workout_id).await?;
         fit_in_window(tx, &mut t, at, now).await?;
     }
+    let (avg_speed, max_speed) = a.cardio.speeds_kmh();
     sqlx::query(
         "UPDATE workout_set SET
             exercise_id = coalesce($2, exercise_id), reps = coalesce($3, reps), weight_kg = coalesce($4, weight_kg),
@@ -781,7 +839,10 @@ async fn update_one(
             machine = CASE WHEN $12::text IS NULL THEN machine ELSE NULLIF(btrim($12), '') END,
             set_type = coalesce($13, set_type), unilateral = coalesce($14, unilateral),
             load_basis = CASE WHEN NOT coalesce($14, unilateral) THEN NULL WHEN $15::text IS NULL THEN load_basis ELSE NULLIF($15, 'default') END,
-            variant = CASE WHEN $16::text IS NULL THEN variant ELSE NULLIF(btrim($16), '') END, updated_at = now()
+            variant = CASE WHEN $16::text IS NULL THEN variant ELSE NULLIF(btrim($16), '') END,
+            avg_hr = coalesce($17, avg_hr), max_hr = coalesce($18, max_hr), calories = coalesce($19, calories),
+            avg_incline_pct = coalesce($20, avg_incline_pct), max_incline_pct = coalesce($21, max_incline_pct),
+            avg_speed_kmh = coalesce($22, avg_speed_kmh), max_speed_kmh = coalesce($23, max_speed_kmh), updated_at = now()
          WHERE id = $1",
     )
     .bind(set_id)
@@ -800,6 +861,13 @@ async fn update_one(
     .bind(a.unilateral)
     .bind(a.load_basis.map(LoadBasis::as_str))
     .bind(&a.variant)
+    .bind(a.cardio.avg_hr)
+    .bind(a.cardio.max_hr)
+    .bind(a.cardio.calories)
+    .bind(a.cardio.avg_incline_pct)
+    .bind(a.cardio.max_incline_pct)
+    .bind(avg_speed)
+    .bind(max_speed)
     .execute(&mut **tx)
     .await?;
     Ok(workout_id)
@@ -834,6 +902,26 @@ pub async fn set_delete(app: &App, owner: &str, a: SetDeleteArgs) -> AppResult<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mph_converts_to_kmh() {
+        let c = CardioMetrics {
+            avg_speed: Some(6.0),
+            max_speed: Some(10.0),
+            speed_unit: Some(SpeedUnit::Mph),
+            ..Default::default()
+        };
+        let (avg, max) = c.speeds_kmh();
+        assert!((avg.unwrap() - 9.656064).abs() < 1e-9 && (max.unwrap() - 16.09344).abs() < 1e-9);
+        assert_eq!(
+            CardioMetrics {
+                avg_speed: Some(8.0),
+                ..Default::default()
+            }
+            .speeds_kmh(),
+            (Some(8.0), None)
+        );
+    }
 
     #[test]
     fn stale_rules() {

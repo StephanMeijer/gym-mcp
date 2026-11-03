@@ -1661,3 +1661,55 @@ async fn batch_update_and_delete_are_all_or_nothing(pool: PgPool) {
         .unwrap();
     assert!(w["workouts"].is_null() && w["workout_id"].is_number(), "{w}");
 }
+
+#[sqlx::test]
+async fn cardio_metrics_round_trip(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    setup::exercise_create(&app, ME, a(json!({"name": "Treadmill run", "kind": "cardio"})))
+        .await
+        .unwrap();
+    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(1)})))
+        .await
+        .unwrap();
+    let added = workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "treadmill", "sets": [
+            {"duration_s": 1800, "distance_m": 5000, "avg_hr": 148, "max_hr": 171, "calories": 320,
+             "avg_incline_pct": 2, "max_incline_pct": 6, "avg_speed": 6, "max_speed": 7.5, "speed_unit": "mph"},
+            {"duration_s": 600, "avg_hr": 120, "avg_speed": 10}]})),
+    )
+    .await
+    .unwrap();
+    let sets = added["workout"]["exercises"][0]["sets"].as_array().unwrap().clone();
+    assert_eq!(sets[0]["avg_hr"], 148);
+    assert_eq!(sets[0]["calories"], 320);
+    assert_eq!(sets[0]["max_incline_pct"], 6.0);
+    assert!((sets[0]["avg_speed_kmh"].as_f64().unwrap() - 9.656064).abs() < 1e-6);
+    assert!((sets[0]["max_speed_kmh"].as_f64().unwrap() - 12.07008).abs() < 1e-6);
+    assert_eq!(sets[1]["avg_speed_kmh"], 10.0);
+
+    let metric = |m: &str| search::progress(&app, ME, a(json!({"exercise": "treadmill", "metric": m})));
+    assert_eq!(metric("avg_hr").await.unwrap()["series"][0]["value"], 141);
+    assert_eq!(metric("avg_speed").await.unwrap()["series"][0]["value"], 9.7);
+    assert_eq!(metric("calories").await.unwrap()["series"][0]["value"], 320);
+    let found = search::set_search(
+        &app,
+        ME,
+        a(json!({"exercise": "treadmill", "order_by": "distance", "limit": 1})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(found[0]["max_hr"], 171);
+
+    let id = sets[1]["set_id"].clone();
+    let msg = user_msg(workout::set_update(&app, ME, a(json!({"set_id": id, "max_hr": 110}))).await);
+    assert!(msg.contains("workout_set_hr_order"), "{msg}");
+    let msg = user_msg(workout::set_update(&app, ME, a(json!({"set_id": id, "avg_hr": 300}))).await);
+    assert!(msg.contains("invalid value"), "{msg}");
+    let w = workout::set_update(&app, ME, a(json!({"set_id": id, "calories": 90})))
+        .await
+        .unwrap();
+    assert_eq!(w["exercises"][0]["sets"][1]["calories"], 90);
+}
