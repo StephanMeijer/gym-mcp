@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/StephanMeijer/gym-mcp/compare/v0.4.1...v0.4.2) - 2026-11-03
+
+### Fixed
+
+- *(setup)* list closest exercises when no search match is good
+- *(exercises)* list every exercise matching the search words
+
 ## [0.4.1](https://github.com/StephanMeijer/gym-mcp/compare/v0.4.0...v0.4.1) - 2026-11-03
 
 ### Fixed
