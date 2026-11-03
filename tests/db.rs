@@ -1631,6 +1631,14 @@ async fn batch_update_and_delete_are_all_or_nothing(pool: PgPool) {
     assert!(msg.contains("not both"), "{msg}");
     let msg = user_msg(workout::set_delete(&app, ME, a(json!({}))).await);
     assert_eq!(msg, "pass set_id or set_ids");
+    // The 1-100 bound runs before any lookup; 100 unknown ids pass it and fail on the first id.
+    let msg = user_msg(workout::set_delete(&app, ME, a(json!({"set_ids": []}))).await);
+    assert_eq!(msg, "pass between 1 and 100 set_ids");
+    let many: Vec<i64> = (900_001..=900_101).collect();
+    let msg = user_msg(workout::set_update(&app, ME, a(json!({"set_ids": many, "weight_kg": 30}))).await);
+    assert_eq!(msg, "pass between 1 and 100 set_ids");
+    let msg = user_msg(workout::set_delete(&app, ME, a(json!({"set_ids": many[..100]}))).await);
+    assert!(msg.starts_with("set 900001"), "{msg}");
     let msg = user_msg(
         workout::set_update(
             &app,
