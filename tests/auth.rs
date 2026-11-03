@@ -1,6 +1,6 @@
 //! Token validation with a fixture RSA key (tests/fixtures; test-only, never used in deployment).
 
-use gym_mcp::auth::validate_token;
+use gym_mcp::auth::{TokenError, validate_token};
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde_json::json;
@@ -44,10 +44,9 @@ fn rejects_wrong_audience_expired_unknown_kid_and_tampering() {
         .is_err()
     );
     assert!(validate_token(&token(claims(AUD, -600), "test"), &keys(), ISS, AUD).is_err());
-    assert!(
-        validate_token(&token(claims(AUD, 300), "nope"), &keys(), ISS, AUD)
-            .unwrap_err()
-            .starts_with("unknown kid")
+    assert_eq!(
+        validate_token(&token(claims(AUD, 300), "nope"), &keys(), ISS, AUD),
+        Err(TokenError::UnknownKid("nope".into()))
     );
     assert!(
         validate_token(
