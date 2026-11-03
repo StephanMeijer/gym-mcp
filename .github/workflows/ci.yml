@@ -31,35 +31,46 @@ jobs:
     env:
       DATABASE_URL: postgres://gym:gym@localhost:5432/gym
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
       - run: cargo test --locked
 
   clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
       - run: cargo clippy --locked --all-targets -- -D warnings
 
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - run: cargo fmt --check
+
+  # Known vulnerabilities in the dependency tree; deny.toml lists the ones that don't reach us, and why.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        with:
+          command: check advisories
 
   # Build (don't push) both arches so a broken Dockerfile can't get tagged.
   docker-build:
@@ -74,7 +85,7 @@ jobs:
   # release run would leave the version untagged until the next push.
   release-plz-release:
     name: Tag and release
-    needs: [test, clippy, fmt, docker-build]
+    needs: [test, clippy, fmt, audit, docker-build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'StephanMeijer/gym-mcp'
     runs-on: ubuntu-latest
     permissions:
@@ -82,14 +93,14 @@ jobs:
       pull-requests: read
       actions: write # dispatch release.yml
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Run release-plz (release)
         id: release-plz
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@v0.5.148
         with:
           command: release
           config: release-plz.toml
@@ -126,13 +137,13 @@ jobs:
       group: release-plz-pr
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Run release-plz (release-pr)
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@v0.5.148
         with:
           command: release-pr
           config: release-plz.toml
