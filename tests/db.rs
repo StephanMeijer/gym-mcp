@@ -1806,3 +1806,69 @@ async fn shift_sets_moves_workout_with_its_sets(pool: PgPool) {
     assert_eq!(times(&w), [m(130), m(145)]);
     assert_eq!(ts(&w["finished_at"]), m(180));
 }
+
+#[sqlx::test]
+async fn estimated_times_clear_on_a_real_time(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    let start = Utc::now() - chrono::Duration::days(2);
+    let at = |m: i64| (start + chrono::Duration::minutes(m)).to_rfc3339();
+    let w = workout::add_past(
+        &app,
+        ME,
+        a(json!({"gym": "ndsm", "started_at": at(0), "finished_at": at(90), "time_estimated": true})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(w["time_estimated"], true);
+    let id = w["workout_id"].clone();
+    let added = workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "leg press", "workout_id": id, "sets": [
+            {"reps": 10, "weight_kg": 100, "performed_at": at(30), "time_estimated": true},
+            {"reps": 10, "weight_kg": 100, "performed_at": at(40)}]})),
+    )
+    .await
+    .unwrap();
+    let flags = |w: &Value| -> Vec<Value> {
+        w["exercises"][0]["sets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["time_estimated"].clone())
+            .collect()
+    };
+    assert_eq!(flags(&added["workout"]), [json!(true), json!(false)]);
+    let guess = added["workout"]["exercises"][0]["sets"][0]["set_id"].clone();
+
+    let upd = |args: Value| workout::set_update(&app, ME, a(args));
+    let w = upd(json!({"set_id": guess, "notes": "felt heavy"})).await.unwrap();
+    assert_eq!(flags(&w)[0], true);
+    let w = upd(json!({"set_id": guess, "performed_at": at(20), "time_estimated": true}))
+        .await
+        .unwrap();
+    assert_eq!(flags(&w)[0], true);
+    let w = upd(json!({"set_id": guess, "performed_at": at(22)})).await.unwrap();
+    assert_eq!(flags(&w)[0], false);
+    let found = search::set_search(&app, ME, a(json!({"exercise": "leg press", "limit": 1})))
+        .await
+        .unwrap();
+    assert_eq!(found[0]["time_estimated"], false);
+
+    // Moving the session keeps the sets' own flags; a new start clears the workout's flag.
+    upd(json!({"set_id": guess, "time_estimated": true})).await.unwrap();
+    let w = workout::update(&app, ME, a(json!({"workout_id": id, "notes": "legs"})))
+        .await
+        .unwrap();
+    assert_eq!(w["time_estimated"], true);
+    let w = workout::update(
+        &app,
+        ME,
+        a(json!({"workout_id": id, "started_at": at(10), "shift_sets": true})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(w["time_estimated"], false);
+    assert_eq!(flags(&w), [json!(true), json!(false)]);
+}

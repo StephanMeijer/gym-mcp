@@ -21,7 +21,9 @@ Gym logbook. Typical flow:
    Then set_add with one entry per set. Never invent ids; names and aliases are accepted everywhere.
 3. Anything not done just now (\"forgot: 3x10 squats at 19:40\") → pass performed_at. A whole past session → workout_add_past, \
    then set_add with its workout_id. Corrections → set_update / set_delete (set_ids for the same fix on several sets at once). \
-A whole session logged at the wrong time → workout_update with started_at and shift_sets true (moves its sets along).
+A whole session logged at the wrong time → workout_update with started_at and shift_sets true (moves its sets along). \
+A vague time (\"around noon\", \"this morning\") → pass it with time_estimated true (set_add per set, workout_add_past); \
+once the real time is known, update it, which clears the flag.
 4. \"What next?\" → training_overview (and exercise_alternatives if something is busy). Recommend from that data. \
    Judge what's possible by comparing each exercise's equipment text with the gym's equipment text; if the gym's text \
    doesn't say, ask the user, then add what you learn to the gym with gym_update equipment_append.

@@ -388,7 +388,7 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
                 'avg_incline_pct', s.avg_incline_pct, 'max_incline_pct', s.max_incline_pct,
                 'avg_speed_kmh', s.avg_speed_kmh, 'max_speed_kmh', s.max_speed_kmh,
                 'set_type', s.set_type, 'unilateral', s.unilateral, 'load_basis', s.load_basis,
-                'machine', s.machine, 'variant', s.variant, 'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
+                'machine', s.machine, 'variant', s.variant, 'time_estimated', s.time_estimated, 'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1), 'notes', NULLIF(s.notes, ''))
          FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN gym g ON g.id = w.gym_id
          JOIN exercise e ON e.id = s.exercise_id
          WHERE w.owner_sub = "
