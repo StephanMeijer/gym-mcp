@@ -336,6 +336,35 @@ async fn search_records_and_overview(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn search_ranks_notes_before_limiting(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(1)})))
+        .await
+        .unwrap();
+    workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "leg press", "sets": [
+            {"reps": 10, "notes": "knee fine"}, {"reps": 10, "notes": "knee fine"}, {"reps": 10, "notes": "knee fine"},
+            {"reps": 10, "notes": "knee knee sharp knee pain"}
+        ]})),
+    )
+    .await
+    .unwrap();
+
+    let hits = search::search(&app, ME, a(json!({"query": "knee", "limit": 2})))
+        .await
+        .unwrap();
+    let notes = hits["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 2);
+    assert_eq!(
+        notes[0]["text"], "knee knee sharp knee pain",
+        "the best match survives the limit"
+    );
+}
+
+#[sqlx::test]
 async fn owners_are_isolated(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
