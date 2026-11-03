@@ -12,7 +12,7 @@ use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 /// The authenticated user, put in request extensions for the tool handlers.
 #[derive(Clone, Debug)]
@@ -24,6 +24,8 @@ pub struct Auth {
     pub resource: String,
     jwks_uri: String,
     keys: RwLock<(JwkSet, Instant)>,
+    /// Serializes JWKS refetches.
+    refresh: Mutex<()>,
     http: reqwest::Client,
     /// Local development only: skip auth and act as this user.
     pub dev_sub: Option<String>,
@@ -120,6 +122,7 @@ impl Auth {
             resource,
             jwks_uri,
             keys: RwLock::new((keys, Instant::now())),
+            refresh: Mutex::new(()),
             http,
             dev_sub: None,
         })
@@ -131,6 +134,7 @@ impl Auth {
             resource,
             jwks_uri: String::new(),
             keys: RwLock::new((JwkSet { keys: vec![] }, Instant::now())),
+            refresh: Mutex::new(()),
             http: reqwest::Client::new(),
             dev_sub: Some(sub),
         }
@@ -139,16 +143,20 @@ impl Auth {
     async fn validate(&self, token: &str) -> Result<String, TokenError> {
         let first = validate_token(token, &self.keys.read().await.0, &self.issuer, &self.resource);
         match first {
-            // Authelia rotated keys: refetch, at most once a minute.
+            // Authelia rotated keys: refetch, at most once a minute. Only callers with an unknown kid wait
+            // for the fetch; the keys lock is never held across it, so known-kid requests keep flowing.
             Err(TokenError::UnknownKid(_)) => {
-                let mut guard = self.keys.write().await;
-                if guard.1.elapsed() >= REFRESH_MIN_INTERVAL {
-                    match self.fetch_keys().await {
-                        Ok(k) => *guard = (k, Instant::now()),
+                let _one_fetch = self.refresh.lock().await;
+                if self.keys.read().await.1.elapsed() >= REFRESH_MIN_INTERVAL {
+                    let fetched = self.fetch_keys().await;
+                    let mut keys = self.keys.write().await;
+                    keys.1 = Instant::now();
+                    match fetched {
+                        Ok(k) => keys.0 = k,
                         Err(err) => tracing::warn!("jwks refresh failed: {err:#}"),
                     }
                 }
-                validate_token(token, &guard.0, &self.issuer, &self.resource)
+                validate_token(token, &self.keys.read().await.0, &self.issuer, &self.resource)
             }
             other => other,
         }
@@ -281,6 +289,51 @@ mod tests {
         let other = auth.validate(&token(&base, "other")).await;
         assert!(matches!(other, Err(TokenError::UnknownKid(_))), "{other:?}");
         assert_eq!(hits.load(SeqCst), 2, "no second fetch within a minute");
+    }
+
+    #[tokio::test]
+    async fn a_slow_refresh_does_not_block_known_kids() {
+        let (base, _) = issuer(None).await;
+        let mut auth = Auth::discover(base.clone(), AUD.into()).await.unwrap();
+        // A JWKS endpoint that hangs until released, like an Authelia that stopped answering.
+        let (hits, release) = (Arc::new(AtomicUsize::new(0)), Arc::new(tokio::sync::Notify::new()));
+        let (h, r) = (hits.clone(), release.clone());
+        let slow = Router::new().route(
+            "/jwks",
+            get(move || {
+                h.fetch_add(1, SeqCst);
+                let r = r.clone();
+                async move {
+                    r.notified().await;
+                    include_str!("../tests/fixtures/jwks.json")
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        auth.jwks_uri = format!("http://{}/jwks", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, slow).await.unwrap() });
+        auth.keys.write().await.1 = Instant::now() - REFRESH_MIN_INTERVAL;
+        let auth = Arc::new(auth);
+
+        let unknown = tokio::spawn({
+            let (auth, t) = (auth.clone(), token(&base, "other"));
+            async move { auth.validate(&t).await }
+        });
+        let wait = Duration::from_secs(5);
+        tokio::time::timeout(wait, async {
+            while hits.load(SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the unknown kid started a refresh");
+
+        let known = tokio::time::timeout(wait, auth.validate(&token(&base, "test"))).await;
+        assert_eq!(known.expect("not blocked by the refresh"), Ok("alice".into()));
+
+        release.notify_one();
+        let unknown = tokio::time::timeout(wait, unknown).await.unwrap().unwrap();
+        assert!(matches!(unknown, Err(TokenError::UnknownKid(_))), "{unknown:?}");
     }
 
     #[tokio::test]
