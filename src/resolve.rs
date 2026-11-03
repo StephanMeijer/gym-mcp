@@ -186,14 +186,6 @@ pub async fn id(tx: &mut Tx, owner: &str, kind: Kind, query: &str) -> AppResult<
     require(kind, query, lookup(tx, owner, kind, query).await?)
 }
 
-/// Like `id`, but `None` when nothing matches (for upserts); ambiguity is still an error.
-pub async fn existing_id(tx: &mut Tx, owner: &str, kind: Kind, query: &str) -> AppResult<Option<i64>> {
-    match lookup(tx, owner, kind, query).await? {
-        Outcome::NotFound(_) => Ok(None),
-        other => require(kind, query, other).map(Some),
-    }
-}
-
 fn as_json(c: &[(i64, String)]) -> serde_json::Value {
     c.iter().map(|(id, name)| json!({"id": id, "name": name})).collect()
 }
