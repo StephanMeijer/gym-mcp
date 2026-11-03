@@ -191,8 +191,8 @@ async fn muscle_volume(tx: &mut Tx, owner: &str, lo: DateTime<Utc>, hi: DateTime
          span AS (SELECT extract(epoch FROM $3::timestamptz - $2::timestamptz) / 86400 AS days)
          SELECT json_build_object(
             'from', $2::timestamptz, 'to', $3::timestamptz, 'days', round((SELECT days FROM span)::numeric, 1),
-            'muscle_groups', json_object_agg(m.muscle_group, json_build_object(
-                'sets', x.sets,
+            'muscle_groups', json_agg(json_build_object(
+                'muscle_group', m.muscle_group, 'sets', x.sets,
                 'sets_per_week', round(x.sets / (SELECT days FROM span)::numeric * 7, 1),
                 'train_days', (SELECT count(DISTINCT performed_at::date) FROM win
                                WHERE muscle_group = m.muscle_group AND weight = 1),
@@ -221,16 +221,15 @@ async fn muscle_groups_overview(tx: &mut Tx, owner: &str) -> AppResult<Value> {
     let lo28 = hi - chrono::Duration::days(28);
     let w7 = muscle_volume(tx, owner, lo7, hi).await?;
     let w28 = muscle_volume(tx, owner, lo28, hi).await?;
-    let mut out = serde_json::Map::new();
-    for g in MUSCLE_GROUPS {
-        let (a, b) = (&w7["muscle_groups"][g], &w28["muscle_groups"][g]);
-        out.insert(
-            g.to_string(),
-            json!({"days_since": b["days_since"], "sets_7d": a["sets"], "sets_28d": b["sets"],
-                   "train_days_28d": b["train_days"], "avg_rpe_28d": b["avg_rpe"]}),
-        );
-    }
-    Ok(Value::Object(out))
+    // Both windows list every group in MUSCLE_GROUPS order, so rows pair up by index.
+    let rows = (0..MUSCLE_GROUPS.len())
+        .map(|i| {
+            let (a, b) = (&w7["muscle_groups"][i], &w28["muscle_groups"][i]);
+            json!({"muscle_group": b["muscle_group"], "days_since": b["days_since"], "sets_7d": a["sets"],
+                   "sets_28d": b["sets"], "train_days_28d": b["train_days"], "avg_rpe_28d": b["avg_rpe"]})
+        })
+        .collect();
+    Ok(Value::Array(rows))
 }
 
 // ---------- muscle_group_volume ----------
@@ -604,7 +603,7 @@ pub async fn personal_records(app: &App, owner: &str, a: RecordsArgs) -> AppResu
                                      'performed_at', performed_at, 'set_id', id) AS r
             FROM mine s WHERE weight_kg IS NOT NULL AND reps > 0 ORDER BY exercise_id, machine_key, {E1RM} DESC, performed_at),
          reps_at AS (
-            SELECT exercise_id, machine_key, json_object_agg(weight_kg, best ORDER BY weight_kg) AS r
+            SELECT exercise_id, machine_key, json_agg(json_build_object('weight_kg', weight_kg, 'reps', best) ORDER BY weight_kg) AS r
             FROM (SELECT exercise_id, machine_key, {LOAD} AS weight_kg, max(reps) AS best FROM mine s
                   WHERE weight_kg IS NOT NULL AND reps IS NOT NULL GROUP BY 1, 2, 3) t GROUP BY exercise_id, machine_key),
          vol AS (
