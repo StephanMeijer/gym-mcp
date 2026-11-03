@@ -1691,8 +1691,8 @@ async fn cardio_metrics_round_trip(pool: PgPool) {
     assert_eq!(sets[1]["avg_speed_kmh"], 10.0);
 
     let metric = |m: &str| search::progress(&app, ME, a(json!({"exercise": "treadmill", "metric": m})));
-    assert_eq!(metric("avg_hr").await.unwrap()["series"][0]["value"], 134);
-    assert_eq!(metric("avg_speed").await.unwrap()["series"][0]["value"], 9.8);
+    assert_eq!(metric("avg_hr").await.unwrap()["series"][0]["value"], 141);
+    assert_eq!(metric("avg_speed").await.unwrap()["series"][0]["value"], 9.7);
     assert_eq!(metric("calories").await.unwrap()["series"][0]["value"], 320);
     let found = search::set_search(
         &app,

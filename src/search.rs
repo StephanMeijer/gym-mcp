@@ -481,9 +481,10 @@ pub enum Metric {
     Duration,
     /// Cardio: best (lowest) seconds per km.
     Pace,
-    /// Cardio: average of the sets' average heart rate, bpm.
+    /// Cardio: average heart rate over time (sets weighted by duration_s), bpm.
+    /// Sets without duration_s are left out: their share of the time is unknown.
     AvgHr,
-    /// Cardio: average of the sets' average speed, km/h.
+    /// Cardio: average speed over time (sets weighted by duration_s), km/h. Sets without duration_s are left out.
     AvgSpeed,
     /// Cardio: total kcal.
     Calories,
@@ -532,8 +533,8 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
         Metric::Distance => "sum(s.distance_m)".to_owned(),
         Metric::Duration => "sum(s.duration_s)".to_owned(),
         Metric::Pace => format!("round(min({PACE})::numeric)"),
-        Metric::AvgHr => "round(avg(s.avg_hr))".to_owned(),
-        Metric::AvgSpeed => "round(avg(s.avg_speed_kmh)::numeric, 1)".to_owned(),
+        Metric::AvgHr => "round(sum(s.avg_hr * s.duration_s::numeric) / NULLIF(sum(s.duration_s) FILTER (WHERE s.avg_hr IS NOT NULL), 0))".to_owned(),
+        Metric::AvgSpeed => "round((sum(s.avg_speed_kmh * s.duration_s) / NULLIF(sum(s.duration_s) FILTER (WHERE s.avg_speed_kmh IS NOT NULL), 0))::numeric, 1)".to_owned(),
         Metric::Calories => "sum(s.calories)".to_owned(),
     };
     let bucket = match a.bucket {
