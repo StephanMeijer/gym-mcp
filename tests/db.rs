@@ -825,6 +825,54 @@ async fn muscle_groups_primary_secondary_and_aliases(pool: PgPool) {
     assert!(bad_filter.contains("unknown muscle group"), "{bad_filter}");
 }
 
+#[sqlx::test]
+async fn exercise_update_changes_only_the_fields_passed(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    setup::exercise_update(
+        &app,
+        ME,
+        a(json!({"exercise": "leg press", "description": "45° sled", "aliases": ["lp"]})),
+    )
+    .await
+    .unwrap();
+
+    let e = setup::exercise_update(&app, ME, a(json!({"exercise": "lp", "equipment": "leg press sled"})))
+        .await
+        .unwrap();
+    assert_eq!(e["equipment"], "leg press sled");
+    assert_eq!(e["description"], "45° sled");
+    assert_eq!(e["aliases"], json!(["lp"]));
+    assert_eq!(e["muscle_groups"], json!(["quads", "glutes"]));
+    assert_eq!(e["kind"], "strength");
+
+    let e = setup::exercise_update(&app, ME, a(json!({"exercise": "lp", "name": "  Leg press 45  "})))
+        .await
+        .unwrap();
+    assert_eq!(e["name"], "Leg press 45");
+    assert_eq!(e["equipment"], "leg press sled");
+
+    let msg = user_msg(setup::exercise_update(&app, "bob", a(json!({"exercise": "lp", "name": "mine"}))).await);
+    assert!(msg.contains("no exercise matches"), "{msg}");
+}
+
+#[sqlx::test]
+async fn gym_list_is_sorted_by_name_with_last_workout(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    let gyms = setup::gym_list(&app, ME).await.unwrap();
+    assert_eq!(gyms[0]["name"], "Basic-Fit Zuid");
+    assert_eq!(gyms[1]["name"], "Trainmore NDSM");
+    assert_eq!(gyms[1]["aliases"], json!(["ndsm"]));
+    assert!(gyms[1]["last_workout_at"].is_null());
+
+    workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    let gyms = setup::gym_list(&app, ME).await.unwrap();
+    assert!(!gyms[1]["last_workout_at"].is_null());
+    assert!(gyms[0]["last_workout_at"].is_null());
+    assert_eq!(setup::gym_list(&app, "bob").await.unwrap(), json!([]));
+}
+
 #[sqlx::test(migrations = false)]
 async fn migration_maps_coarse_muscle_groups(pool: PgPool) {
     for m in [
