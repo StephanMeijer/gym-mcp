@@ -464,12 +464,14 @@ pub struct CardioMetrics {
     pub speed_unit: Option<SpeedUnit>,
 }
 
+const KM_PER_MILE: f64 = 1.609_344;
+
 impl CardioMetrics {
     /// (avg, max) speed in km/h.
     fn speeds_kmh(&self) -> (Option<f64>, Option<f64>) {
         let f = match self.speed_unit.unwrap_or_default() {
             SpeedUnit::Kmh => 1.0,
-            SpeedUnit::Mph => 1.609344,
+            SpeedUnit::Mph => KM_PER_MILE,
         };
         (self.avg_speed.map(|v| v * f), self.max_speed.map(|v| v * f))
     }
