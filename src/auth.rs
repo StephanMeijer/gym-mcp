@@ -47,27 +47,45 @@ struct Claims {
     sub: String,
 }
 
-/// Pure token check: signature (by `kid`), `iss`, `aud`, `exp`. Returns the `sub`.
-pub fn validate_token(token: &str, keys: &JwkSet, issuer: &str, audience: &str) -> Result<String, String> {
-    let header = decode_header(token).map_err(|e| format!("malformed token: {e}"))?;
-    if !ASYMMETRIC.contains(&header.alg) {
-        return Err(format!("algorithm {:?} not accepted", header.alg));
+/// Why a token was rejected. `UnknownKid` is the one a key refresh can fix.
+#[derive(Debug, PartialEq)]
+pub enum TokenError {
+    UnknownKid(String),
+    Invalid(String),
+}
+
+impl std::fmt::Display for TokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenError::UnknownKid(kid) => write!(f, "unknown kid {kid}"),
+            TokenError::Invalid(m) => f.write_str(m),
+        }
     }
-    let kid = header.kid.ok_or("token has no kid")?;
-    let jwk = keys.find(&kid).ok_or_else(|| format!("unknown kid {kid}"))?;
-    let key = DecodingKey::from_jwk(jwk).map_err(|e| format!("bad jwk: {e}"))?;
+}
+
+/// Pure token check: signature (by `kid`), `iss`, `aud`, `exp`. Returns the `sub`.
+pub fn validate_token(token: &str, keys: &JwkSet, issuer: &str, audience: &str) -> Result<String, TokenError> {
+    let invalid = TokenError::Invalid;
+    let header = decode_header(token).map_err(|e| invalid(format!("malformed token: {e}")))?;
+    if !ASYMMETRIC.contains(&header.alg) {
+        return Err(invalid(format!("algorithm {:?} not accepted", header.alg)));
+    }
+    let kid = header.kid.ok_or_else(|| invalid("token has no kid".into()))?;
+    let jwk = keys.find(&kid).ok_or(TokenError::UnknownKid(kid.clone()))?;
+    let key = DecodingKey::from_jwk(jwk).map_err(|e| invalid(format!("bad jwk: {e}")))?;
     let mut v = Validation::new(header.alg);
     v.set_issuer(&[issuer]);
     v.set_audience(&[audience]);
     v.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-    let data = decode::<Claims>(token, &key, &v).map_err(|e| format!("invalid token: {e}"))?;
+    let data = decode::<Claims>(token, &key, &v).map_err(|e| invalid(format!("invalid token: {e}")))?;
     Ok(data.claims.sub)
 }
 
 impl Auth {
     pub async fn discover(issuer: String, resource: String) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).build()?;
-        let url = format!("{}/.well-known/openid-configuration", issuer.trim_end_matches('/'));
+        let base = issuer.trim_end_matches('/').to_owned();
+        let url = format!("{base}/.well-known/openid-configuration");
         let conf: serde_json::Value = http
             .get(&url)
             .send()
@@ -76,6 +94,15 @@ impl Auth {
             .json()
             .await
             .context("openid-configuration")?;
+        // Tokens carry the document's `iss` exactly; OIDC_ISSUER may differ from it by a trailing slash.
+        let issuer = conf["issuer"]
+            .as_str()
+            .context("discovery document has no issuer")?
+            .to_owned();
+        anyhow::ensure!(
+            issuer.trim_end_matches('/') == base,
+            "OIDC_ISSUER {base} doesn't match the discovery document's issuer {issuer}"
+        );
         let jwks_uri = conf["jwks_uri"]
             .as_str()
             .context("discovery document has no jwks_uri")?
@@ -109,11 +136,11 @@ impl Auth {
         }
     }
 
-    async fn validate(&self, token: &str) -> Result<String, String> {
+    async fn validate(&self, token: &str) -> Result<String, TokenError> {
         let first = validate_token(token, &self.keys.read().await.0, &self.issuer, &self.resource);
         match first {
             // Authelia rotated keys: refetch, at most once a minute.
-            Err(e) if e.starts_with("unknown kid") => {
+            Err(TokenError::UnknownKid(_)) => {
                 let mut guard = self.keys.write().await;
                 if guard.1.elapsed() >= REFRESH_MIN_INTERVAL {
                     match self.fetch_keys().await {
@@ -191,4 +218,85 @@ fn unauthorized(auth: &Auth, error: Option<&str>) -> Response {
         res.headers_mut().insert(header::WWW_AUTHENTICATE, v);
     }
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+    use axum::{Router, routing::get};
+    use jsonwebtoken::{EncodingKey, Header, encode};
+
+    use super::*;
+
+    const AUD: &str = "https://gym.example.com";
+
+    /// A local issuer serving its discovery document (announcing `announce`, else its own URL) and the
+    /// fixture JWKS. Returns its URL and a count of JWKS fetches.
+    async fn issuer(announce: Option<&str>) -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let conf = json!({"issuer": announce.unwrap_or(&base), "jwks_uri": format!("{base}/jwks")});
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        let app = Router::new()
+            .route(
+                "/.well-known/openid-configuration",
+                get(move || {
+                    let conf = conf.clone();
+                    async move { axum::Json(conf) }
+                }),
+            )
+            .route(
+                "/jwks",
+                get(move || {
+                    h.fetch_add(1, SeqCst);
+                    async { include_str!("../tests/fixtures/jwks.json") }
+                }),
+            );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, hits)
+    }
+
+    /// A token from `iss`, signed with the fixture key under `kid`.
+    fn token(iss: &str, kid: &str) -> String {
+        let mut h = Header::new(Algorithm::RS256);
+        h.kid = Some(kid.into());
+        let key = EncodingKey::from_rsa_pem(include_bytes!("../tests/fixtures/test_rsa.pem")).unwrap();
+        let exp = chrono::Utc::now().timestamp() + 300;
+        encode(&h, &json!({"iss": iss, "aud": [AUD], "sub": "alice", "exp": exp}), &key).unwrap()
+    }
+
+    #[tokio::test]
+    async fn unknown_kid_refreshes_keys_at_most_once_a_minute() {
+        let (base, hits) = issuer(None).await;
+        let auth = Auth::discover(base.clone(), AUD.into()).await.unwrap();
+        assert_eq!(hits.load(SeqCst), 1);
+        // Authelia rotated its keys: none of ours match, and the last fetch was over a minute ago.
+        *auth.keys.write().await = (JwkSet { keys: vec![] }, Instant::now() - REFRESH_MIN_INTERVAL);
+
+        assert_eq!(auth.validate(&token(&base, "test")).await, Ok("alice".into()));
+        assert_eq!(hits.load(SeqCst), 2, "refetched once");
+
+        let other = auth.validate(&token(&base, "other")).await;
+        assert!(matches!(other, Err(TokenError::UnknownKid(_))), "{other:?}");
+        assert_eq!(hits.load(SeqCst), 2, "no second fetch within a minute");
+    }
+
+    #[tokio::test]
+    async fn discover_trusts_the_documents_issuer() {
+        let (base, _) = issuer(None).await;
+        let auth = Auth::discover(format!("{base}/"), AUD.into()).await.unwrap();
+        assert_eq!(
+            auth.issuer, base,
+            "OIDC_ISSUER's trailing slash doesn't reach the iss check"
+        );
+        assert_eq!(auth.validate(&token(&base, "test")).await, Ok("alice".into()));
+
+        let (other, _) = issuer(Some("https://elsewhere.example.com")).await;
+        assert!(
+            Auth::discover(other, AUD.into()).await.is_err(),
+            "issuer mismatch fails at startup"
+        );
+    }
 }
