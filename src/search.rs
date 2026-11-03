@@ -280,7 +280,10 @@ pub async fn search(app: &App, owner: &str, a: SearchArgs) -> AppResult<Value> {
     let mut names = Vec::new();
     for kind in [Kind::Gym, Kind::Exercise] {
         let cands = resolve::candidates(&mut tx, owner, kind).await?;
-        for (score, id, name) in resolve::rank(&a.query, &cands).into_iter().filter(|r| r.0 >= 0.5) {
+        for (score, id, name) in resolve::rank(&a.query, &cands)
+            .into_iter()
+            .filter(|r| r.0 >= resolve::LIST)
+        {
             names.push(json!({"type": kind.table(), "id": id, "name": name, "score": (score.min(1.0) * 100.0).round() / 100.0}));
         }
     }

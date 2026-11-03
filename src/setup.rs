@@ -466,7 +466,7 @@ pub async fn exercise_search(app: &App, owner: &str, a: ExerciseSearchArgs) -> A
                 Ok(id) if cands.iter().any(|c| c.id == id) => vec![id],
                 _ => {
                     let ranked = resolve::rank(q, &cands);
-                    let good: Vec<i64> = ranked.iter().filter(|r| r.0 >= 0.5).map(|r| r.1).collect();
+                    let good: Vec<i64> = ranked.iter().filter(|r| r.0 >= resolve::LIST).map(|r| r.1).collect();
                     // No good match: still offer the closest few, so search-before-create doesn't come back empty.
                     if good.is_empty() {
                         ranked.iter().filter(|r| r.0 > 0.0).take(5).map(|r| r.1).collect()
