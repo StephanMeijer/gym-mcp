@@ -29,7 +29,7 @@ Rust (rmcp, axum, sqlx) on plain Postgres (no extensions). Your Authelia handles
 **Workout lifecycle**
 - `workout_start` at the gym that already has the open workout resumes it.
 - `workout_start` at a different gym is refused unless you pass `finish_open: true`.
-- A workout is stale when its last activity is older than `WORKOUT_STALE_AFTER`. The next workout action (start, finish, `set_add`) closes a stale workout first: one with sets is finished at its last set; one with no sets and no notes is deleted. Read tools (`workout_current`, `training_overview`) show the workout as closed but don't save that.
+- A workout is stale when its last activity is older than `WORKOUT_STALE_AFTER`. The next workout action (start, finish, `set_add`) closes a stale workout first: one with sets is finished at its last set; one with no sets, no notes and no body notes is deleted. Read tools (`workout_current`, `training_overview`) show the workout as closed but don't save that.
 - Past sessions are entered with `workout_add_past`, then `set_add` with a `workout_id`.
 
 ## Tools
