@@ -28,11 +28,13 @@ fn parse_duration(s: &str) -> anyhow::Result<Duration> {
         Some('s') => (&s[..s.len() - 1], 1),
         _ => (s, 1),
     };
+    let n = num
+        .trim()
+        .parse::<u64>()
+        .with_context(|| format!("bad duration {s:?}"))?;
     Ok(Duration::from_secs(
-        num.trim()
-            .parse::<u64>()
-            .with_context(|| format!("bad duration {s:?}"))?
-            * mult,
+        n.checked_mul(mult)
+            .with_context(|| format!("duration {s:?} too large"))?,
     ))
 }
 
@@ -96,4 +98,22 @@ async fn main() -> anyhow::Result<()> {
         })
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durations() {
+        assert_eq!(parse_duration("3h").unwrap(), Duration::from_secs(3 * 3600));
+        assert_eq!(parse_duration("90m").unwrap(), Duration::from_secs(90 * 60));
+        assert_eq!(parse_duration("45s").unwrap(), Duration::from_secs(45));
+        assert_eq!(parse_duration("10").unwrap(), Duration::from_secs(10));
+        for bad in ["", "h", "-1h", "3d", "1.5h"] {
+            assert!(parse_duration(bad).is_err(), "{bad:?}");
+        }
+        let err = parse_duration("5124095576030432h").unwrap_err().to_string();
+        assert!(err.contains("too large"), "{err}");
+    }
 }
