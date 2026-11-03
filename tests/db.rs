@@ -1562,3 +1562,102 @@ async fn standard_variant_is_remembered_after_a_grip(pool: PgPool) {
     assert!(inherited["variant"].is_null());
     assert_eq!(inherited["variant_source"], "last_used_here");
 }
+
+#[sqlx::test]
+async fn batch_update_and_delete_are_all_or_nothing(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(1)})))
+        .await
+        .unwrap();
+    let added = workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "cable fly", "sets": [{"reps": 10, "weight_kg": 20}, {"reps": 10, "weight_kg": 20}, {"reps": 8, "weight_kg": 20}]})),
+    )
+    .await
+    .unwrap();
+    let ids: Vec<i64> = added["workout"]["exercises"][0]["sets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["set_id"].as_i64().unwrap())
+        .collect();
+    let sets = |w: &Value| w["exercises"][0]["sets"].as_array().unwrap().clone();
+
+    // set_ids always returns {"workouts": [...]}, even when the sets share one workout.
+    let w = &workout::set_update(
+        &app,
+        ME,
+        a(json!({"set_ids": ids, "weight_kg": 22.5, "variant": "vertical handles"})),
+    )
+    .await
+    .unwrap()["workouts"][0];
+    assert!(
+        sets(w)
+            .iter()
+            .all(|s| s["weight_kg"] == 22.5 && s["variant"] == "vertical handles")
+    );
+
+    // One bad entry rejects the batch, names the entry, and changes nothing.
+    let msg = user_msg(workout::set_update(&app, ME, a(json!({"set_ids": [ids[0], 999999], "weight_kg": 30}))).await);
+    assert!(msg.contains("set 999999"), "{msg}");
+    setup::gym_create(&app, "bob", a(json!({"name": "Bob's gym"})))
+        .await
+        .unwrap();
+    setup::exercise_create(&app, "bob", a(json!({"name": "Squat", "muscle_groups": ["quads"]})))
+        .await
+        .unwrap();
+    workout::start(&app, "bob", a(json!({"gym": "bob's gym"})))
+        .await
+        .unwrap();
+    let bobs = workout::set_add(
+        &app,
+        "bob",
+        a(json!({"exercise": "squat", "sets": [{"reps": 5, "weight_kg": 100}]})),
+    )
+    .await
+    .unwrap()["workout"]["exercises"][0]["sets"][0]["set_id"]
+        .clone();
+    let msg = user_msg(workout::set_delete(&app, ME, a(json!({"set_ids": [ids[0], bobs]}))).await);
+    assert!(msg.contains(&format!("set {bobs}")), "{msg}");
+    let msg = user_msg(workout::set_update(&app, ME, a(json!({"set_ids": ids, "rpe": 11}))).await);
+    assert!(msg.starts_with(&format!("set {}", ids[0])), "{msg}");
+    let w = workout::current(&app, ME).await.unwrap()["open_workout"].clone();
+    assert_eq!(sets(&w).len(), 3);
+    assert!(sets(&w).iter().all(|s| s["weight_kg"] == 22.5 && s["rpe"].is_null()));
+
+    let msg = user_msg(workout::set_delete(&app, ME, a(json!({"set_id": ids[0], "set_ids": [ids[1]]}))).await);
+    assert!(msg.contains("not both"), "{msg}");
+    let msg = user_msg(workout::set_delete(&app, ME, a(json!({}))).await);
+    assert_eq!(msg, "pass set_id or set_ids");
+    // The 1-100 bound runs before any lookup; 100 unknown ids pass it and fail on the first id.
+    let msg = user_msg(workout::set_delete(&app, ME, a(json!({"set_ids": []}))).await);
+    assert_eq!(msg, "pass between 1 and 100 set_ids");
+    let many: Vec<i64> = (900_001..=900_101).collect();
+    let msg = user_msg(workout::set_update(&app, ME, a(json!({"set_ids": many, "weight_kg": 30}))).await);
+    assert_eq!(msg, "pass between 1 and 100 set_ids");
+    let msg = user_msg(workout::set_delete(&app, ME, a(json!({"set_ids": many[..100]}))).await);
+    assert!(msg.starts_with("set 900001"), "{msg}");
+    let msg = user_msg(
+        workout::set_update(
+            &app,
+            ME,
+            a(json!({"set_ids": [ids[0], ids[1]], "performed_at": hours_ago(1)})),
+        )
+        .await,
+    );
+    assert!(msg.contains("one set at a time"), "{msg}");
+    // A single id in set_ids may still move.
+    workout::set_update(&app, ME, a(json!({"set_ids": [ids[2]], "performed_at": hours_ago(1)})))
+        .await
+        .unwrap();
+    let w = workout::set_delete(&app, ME, a(json!({"set_ids": [ids[0], ids[1], ids[0]]})))
+        .await
+        .unwrap();
+    assert_eq!(sets(&w["workouts"][0]).len(), 1);
+    let w = workout::set_delete(&app, ME, a(json!({"set_id": ids[2]})))
+        .await
+        .unwrap();
+    assert!(w["workouts"].is_null() && w["workout_id"].is_number(), "{w}");
+}
