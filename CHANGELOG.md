@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/StephanMeijer/gym-mcp/compare/v0.4.5...v0.5.0) - 2026-11-06
+
+### Added
+
+- *(measurements)* [**breaking**] stop tracking weight, height, waist and resting heart rate
+
+### Fixed
+
+- *(times)* reject timestamps outside chrono's range
+- *(times)* reject infinite timestamps instead of panicking
+
 ## [0.4.5](https://github.com/StephanMeijer/gym-mcp/compare/v0.4.4...v0.4.5) - 2026-11-03
 
 ### Other
