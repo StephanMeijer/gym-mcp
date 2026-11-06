@@ -1277,54 +1277,49 @@ async fn settings_profile_round_trip(pool: PgPool) {
 async fn measurements_round_trip(pool: PgPool) {
     let app = app(pool);
     seed(&app).await;
-    let bw = |app: &App| {
-        let app = app.clone();
-        async move {
-            search::training_overview(&app, ME, a(json!({"gym": "ndsm"})))
-                .await
-                .unwrap()["overview"]["body_weight"]
-                .clone()
-        }
-    };
-    assert!(bw(&app).await.is_null());
+    let old = measurement::measurement_add(
+        &app,
+        ME,
+        a(json!({"kind": "body_fat", "value": 20.0, "measured_at": hours_ago(30 * 24)})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(old["kind"], "body_fat");
+    assert_eq!(old["unit"], "%");
+    let new = measurement::measurement_add(
+        &app,
+        ME,
+        a(json!({"kind": "body_fat", "value": 18.5, "notes": "morning"})),
+    )
+    .await
+    .unwrap();
 
-    let old = measurement::measurement_add(&app, ME, a(json!({"value": 85.0, "measured_at": hours_ago(30 * 24)})))
+    let list = measurement::measurement_list(&app, ME, a(json!({"kind": "body_fat"})))
         .await
         .unwrap();
-    assert_eq!(old["kind"], "body_weight");
-    assert_eq!(old["unit"], "kg");
-    let new = measurement::measurement_add(&app, ME, a(json!({"value": 180, "unit": "lb", "notes": "morning"})))
-        .await
-        .unwrap();
-    assert!((new["value"].as_f64().unwrap() - 81.6466).abs() < 0.001, "{new}");
-    assert_eq!(new["unit"], "kg");
-
-    let list = measurement::measurement_list(&app, ME, a(json!({}))).await.unwrap();
     assert_eq!(list.as_array().unwrap().len(), 2);
     assert_eq!(list[0]["id"], new["id"], "newest first");
-    let recent = measurement::measurement_list(&app, ME, a(json!({"from": hours_ago(24)})))
+    let recent = measurement::measurement_list(&app, ME, a(json!({"kind": "body_fat", "from": hours_ago(24)})))
         .await
         .unwrap();
     assert_eq!(recent.as_array().unwrap().len(), 1);
 
-    let ov = bw(&app).await;
-    assert!((ov["latest_kg"].as_f64().unwrap() - 81.6466).abs() < 0.001, "{ov}");
-    assert!((ov["change_4w_kg"].as_f64().unwrap() + 3.35).abs() < 0.001, "{ov}");
-
     let up = measurement::measurement_update(
         &app,
         ME,
-        a(json!({"id": new["id"], "value": 82.0, "notes": "after breakfast"})),
+        a(json!({"id": new["id"], "value": 18.0, "notes": "after breakfast"})),
     )
     .await
     .unwrap();
-    assert_eq!(up["value"], 82.0);
+    assert_eq!(up["value"], 18.0);
     assert_eq!(up["notes"], "after breakfast");
 
     // owner isolation
     let id = new["id"].clone();
     assert_eq!(
-        measurement::measurement_list(&app, "bob", a(json!({}))).await.unwrap(),
+        measurement::measurement_list(&app, "bob", a(json!({"kind": "body_fat"})))
+            .await
+            .unwrap(),
         json!([])
     );
     let msg = user_msg(measurement::measurement_update(&app, "bob", a(json!({"id": id, "value": 1.0}))).await);
@@ -1335,53 +1330,22 @@ async fn measurements_round_trip(pool: PgPool) {
     measurement::measurement_delete(&app, ME, a(json!({"id": id})))
         .await
         .unwrap();
-    let list = measurement::measurement_list(&app, ME, a(json!({}))).await.unwrap();
+    let list = measurement::measurement_list(&app, ME, a(json!({"kind": "body_fat"})))
+        .await
+        .unwrap();
     assert_eq!(list.as_array().unwrap().len(), 1);
-    assert!(bw(&app).await["change_4w_kg"].is_null(), "one measurement: no change");
 
     let future = (Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
-    user_msg(measurement::measurement_add(&app, ME, a(json!({"value": 80.0, "measured_at": future}))).await);
-    let msg = user_msg(measurement::measurement_add(&app, ME, a(json!({"value": 0.0}))).await);
+    user_msg(
+        measurement::measurement_add(
+            &app,
+            ME,
+            a(json!({"kind": "body_fat", "value": 18.0, "measured_at": future})),
+        )
+        .await,
+    );
+    let msg = user_msg(measurement::measurement_add(&app, ME, a(json!({"kind": "body_fat", "value": 0.0}))).await);
     assert!(msg.contains("invalid value"), "{msg}");
-}
-
-#[sqlx::test]
-async fn body_height_is_stored_in_cm_and_kept_apart(pool: PgPool) {
-    let app = app(pool);
-    seed(&app).await;
-    measurement::measurement_add(&app, ME, a(json!({"value": 80.0})))
-        .await
-        .unwrap();
-    let h = measurement::measurement_add(&app, ME, a(json!({"kind": "body_height", "value": 72, "unit": "in"})))
-        .await
-        .unwrap();
-    assert_eq!(h["kind"], "body_height");
-    assert_eq!(h["unit"], "cm");
-    assert!((h["value"].as_f64().unwrap() - 182.88).abs() < 1e-9, "{h}");
-
-    let up = measurement::measurement_update(&app, ME, a(json!({"id": h["id"], "value": 183})))
-        .await
-        .unwrap();
-    assert_eq!(up["value"], 183.0, "default unit is the measurement's own (cm)");
-    let msg =
-        user_msg(measurement::measurement_update(&app, ME, a(json!({"id": h["id"], "value": 80, "unit": "kg"}))).await);
-    assert!(msg.contains("cm or in"), "{msg}");
-
-    let heights = measurement::measurement_list(&app, ME, a(json!({"kind": "body_height"})))
-        .await
-        .unwrap();
-    assert_eq!(heights.as_array().unwrap().len(), 1);
-    assert_eq!(
-        measurement::measurement_list(&app, ME, a(json!({}))).await.unwrap()[0]["kind"],
-        "body_weight"
-    );
-    let ov = search::training_overview(&app, ME, a(json!({"gym": "ndsm"})))
-        .await
-        .unwrap();
-    assert_eq!(
-        ov["overview"]["body_weight"]["latest_kg"], 80.0,
-        "height doesn't count as body weight"
-    );
 }
 
 #[sqlx::test]
@@ -1392,38 +1356,56 @@ async fn vitals_store_their_unit_and_show_in_overview(pool: PgPool) {
         let app = app.clone();
         async move { measurement::measurement_add(&app, ME, a(v)).await }
     };
-    let waist = add(json!({"kind": "waist_circumference", "value": 34, "unit": "in"}))
-        .await
-        .unwrap();
-    assert_eq!(waist["unit"], "cm");
-    assert!((waist["value"].as_f64().unwrap() - 86.36).abs() < 1e-9, "{waist}");
     for (kind, value, unit) in [
         ("body_fat", 18.5, "%"),
-        ("resting_heart_rate", 52.0, "bpm"),
         ("blood_pressure_systolic", 128.0, "mmHg"),
         ("blood_pressure_diastolic", 82.0, "mmHg"),
     ] {
         let m = add(json!({"kind": kind, "value": value})).await.unwrap();
         assert_eq!((m["kind"].as_str(), m["unit"].as_str()), (Some(kind), Some(unit)));
     }
-    add(json!({"kind": "resting_heart_rate", "value": 60, "measured_at": hours_ago(48)}))
+    add(json!({"kind": "blood_pressure_systolic", "value": 120, "measured_at": hours_ago(48)}))
         .await
         .unwrap();
 
     let msg = user_msg(add(json!({"kind": "body_fat", "value": 120})).await);
     assert!(msg.contains("invalid value"), "{msg}");
-    let msg = user_msg(add(json!({"kind": "resting_heart_rate", "value": 52, "unit": "kg"})).await);
-    assert!(msg.contains("bpm"), "{msg}");
+    let msg = user_msg(add(json!({"kind": "blood_pressure_systolic", "value": 128, "unit": "percent"})).await);
+    assert!(msg.contains("mmhg"), "{msg}");
 
     let ov = search::training_overview(&app, ME, a(json!({"gym": "ndsm"})))
         .await
         .unwrap();
     let m = &ov["overview"]["measurements"];
-    assert_eq!(m["resting_heart_rate"]["value"], 52.0, "latest, not the older 60: {m}");
-    assert_eq!(m["resting_heart_rate"]["avg_28d"], 56.0, "{m}");
-    assert_eq!(m["blood_pressure_systolic"]["unit"], "mmHg");
-    assert!(m.get("body_weight").is_none(), "body weight has its own field");
-    assert!(ov["overview"]["body_weight"].is_null());
+    assert_eq!(
+        m["blood_pressure_systolic"]["value"], 128.0,
+        "latest, not the older 120: {m}"
+    );
+    assert_eq!(m["blood_pressure_systolic"]["avg_28d"], 124.0, "{m}");
+    assert_eq!(m["body_fat"]["unit"], "%");
+    assert!(
+        ov["overview"].get("body_weight").is_none(),
+        "body weight is no longer tracked"
+    );
+}
+
+#[test]
+fn removed_kinds_are_rejected() {
+    for kind in [
+        "body_weight",
+        "body_height",
+        "waist_circumference",
+        "resting_heart_rate",
+    ] {
+        assert!(
+            serde_json::from_value::<measurement::MeasurementAddArgs>(json!({"kind": kind, "value": 80})).is_err(),
+            "{kind}"
+        );
+    }
+    assert!(
+        serde_json::from_value::<measurement::MeasurementAddArgs>(json!({"value": 18.5})).is_err(),
+        "kind is required"
+    );
 }
 
 #[sqlx::test]
@@ -2162,8 +2144,14 @@ async fn infinite_times_are_user_errors(pool: PgPool) {
         .await,
     );
     assert!(msg.contains("infinity"), "{msg}");
-    let msg =
-        user_msg(measurement::measurement_add(&app, ME, a(json!({"value": 80.0, "measured_at": "infinity"}))).await);
+    let msg = user_msg(
+        measurement::measurement_add(
+            &app,
+            ME,
+            a(json!({"kind": "body_fat", "value": 18.0, "measured_at": "infinity"})),
+        )
+        .await,
+    );
     assert!(msg.contains("infinity"), "{msg}");
     let msg = user_msg(search::muscle_group_volume(&app, ME, a(json!({"from": "-infinity"}))).await);
     assert!(msg.contains("infinity"), "{msg}");
