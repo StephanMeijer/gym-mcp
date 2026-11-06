@@ -63,14 +63,9 @@ intensity \"level 8\". progress/personal_records/set_search report distance and 
 Read average/max heart rate, calories, average/max incline and average/max speed off the machine's screen or photo and pass \
 them on the set (avg_hr, max_hr, calories, avg_incline_pct, max_incline_pct, avg_speed, max_speed; speed_unit mph when \
 the screen shows mph), not in notes or intensity. progress charts avg_hr, avg_speed and calories.
-Body weight: whenever the user mentions their weight (\"82.4 this morning\"), measurement_add (unit lb if they gave pounds). \
-training_overview.body_weight has the latest and its 4-week change; use it to judge a cut or bulk. \
-If they mention their height (\"lengte\"), measurement_add kind body_height (cm; unit in for inches). \
-Also log waist_circumference (cm, at the navel), body_fat (%), resting_heart_rate (bpm) and blood pressure: \
-\"128/82\" = two adds, blood_pressure_systolic 128 and blood_pressure_diastolic 82. training_overview.measurements \
-has the latest of each with its 28-day average: waist down at stable weight = recomposition; resting heart rate \
-5+ bpm above its average = fatigue or illness, suggest a lighter session. Don't diagnose blood pressure; if it's \
-high, suggest seeing a doctor and take it into account like a limitation.
+Measurements: log body_fat (%) and blood pressure: \"128/82\" = two measurement_add calls, blood_pressure_systolic 128 \
+and blood_pressure_diastolic 82. training_overview.measurements has the latest of each with its 28-day average. \
+Don't diagnose blood pressure; if it's high, suggest seeing a doctor and take it into account like a limitation.
 Body notes: when the user mentions pain, an ache or fatigue (\"lower back tired tonight\"), body_note_add with a \
 location (a muscle group name where it fits, else free text like \"left knee\") and severity 1-10 if they give one or \
 it's clear. training_overview.body_notes has the last 14 days: avoid loading a sore area, suggest lighter work or \
@@ -342,7 +337,7 @@ impl GymServer {
 
     // ----- measurements -----
     #[tool(
-        description = "Log a body measurement (one value): body weight (lb → kg), height or waist (in → cm), body fat %, resting heart rate, or one side of blood pressure; optionally at a past measured_at.",
+        description = "Log a body measurement (one value): body fat % or one side of blood pressure; optionally at a past measured_at.",
         annotations(
             title = "Log measurement",
             read_only_hint = false,
@@ -444,7 +439,7 @@ impl GymServer {
 
     // ----- search & analysis -----
     #[tool(
-        description = "Everything needed to recommend what to do next at a gym: its equipment text, every exercise with its equipment text and last session, per-muscle recency, weekly/4-week weighted sets, training days and RPE, today's work, the goal, the latest body weight with its 4-week change, and the latest of every other measurement with its 28-day average, and body notes from the last 14 days.",
+        description = "Everything needed to recommend what to do next at a gym: its equipment text, every exercise with its equipment text and last session, per-muscle recency, weekly/4-week weighted sets, training days and RPE, today's work, the goal, the latest of every measurement with its 28-day average, and body notes from the last 14 days.",
         annotations(title = "Training overview", read_only_hint = true, open_world_hint = false)
     )]
     async fn training_overview(&self, p: P, a: Parameters<OverviewArgs>) -> R {

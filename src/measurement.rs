@@ -1,4 +1,4 @@
-//! Body measurements over time: weight, height, waist, body fat, resting heart rate, blood pressure.
+//! Body measurements over time: body fat and blood pressure.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -8,26 +8,15 @@ use sqlx::AssertSqlSafe;
 use crate::db::{self, App, AppResult, Tx, user_err};
 use crate::workout::{now, optional_past_time};
 
-const KG_PER_LB: f64 = 0.453_592_37;
-const CM_PER_IN: f64 = 2.54;
-
 /// The JSON of one `measurement` row.
 const ROW: &str = "json_build_object('id', id, 'kind', kind, 'value', value, 'unit', unit,
                                      'measured_at', measured_at, 'notes', NULLIF(notes, ''))";
 
-#[derive(Deserialize, JsonSchema, Clone, Copy, Default)]
+#[derive(Deserialize, JsonSchema, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum MeasurementKind {
-    #[default]
-    BodyWeight,
-    /// Body height ("length").
-    BodyHeight,
-    /// Waist circumference, at the navel.
-    WaistCircumference,
     /// Body fat percentage.
     BodyFat,
-    /// Resting heart rate, ideally in the morning before getting up.
-    RestingHeartRate,
     /// Blood pressure, upper number ("128/82" → 128).
     BloodPressureSystolic,
     /// Blood pressure, lower number ("128/82" → 82).
@@ -37,11 +26,7 @@ pub enum MeasurementKind {
 impl MeasurementKind {
     fn as_str(self) -> &'static str {
         match self {
-            MeasurementKind::BodyWeight => "body_weight",
-            MeasurementKind::BodyHeight => "body_height",
-            MeasurementKind::WaistCircumference => "waist_circumference",
             MeasurementKind::BodyFat => "body_fat",
-            MeasurementKind::RestingHeartRate => "resting_heart_rate",
             MeasurementKind::BloodPressureSystolic => "blood_pressure_systolic",
             MeasurementKind::BloodPressureDiastolic => "blood_pressure_diastolic",
         }
@@ -59,12 +44,7 @@ impl MeasurementKind {
     /// Accepted input units and their factor to the stored unit, which comes first.
     fn units(self) -> &'static [(Unit, f64)] {
         match self {
-            MeasurementKind::BodyWeight => &[(Unit::Kg, 1.0), (Unit::Lb, KG_PER_LB)],
-            MeasurementKind::BodyHeight | MeasurementKind::WaistCircumference => {
-                &[(Unit::Cm, 1.0), (Unit::In, CM_PER_IN)]
-            }
             MeasurementKind::BodyFat => &[(Unit::Percent, 1.0)],
-            MeasurementKind::RestingHeartRate => &[(Unit::Bpm, 1.0)],
             MeasurementKind::BloodPressureSystolic | MeasurementKind::BloodPressureDiastolic => &[(Unit::Mmhg, 1.0)],
         }
     }
@@ -73,12 +53,7 @@ impl MeasurementKind {
 #[derive(Deserialize, JsonSchema, Clone, Copy, PartialEq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum Unit {
-    Kg,
-    Lb,
-    Cm,
-    In,
     Percent,
-    Bpm,
     Mmhg,
 }
 
@@ -86,12 +61,7 @@ impl Unit {
     /// As stored in `measurement.unit`.
     fn as_str(self) -> &'static str {
         match self {
-            Unit::Kg => "kg",
-            Unit::Lb => "lb",
-            Unit::Cm => "cm",
-            Unit::In => "in",
             Unit::Percent => "%",
-            Unit::Bpm => "bpm",
             Unit::Mmhg => "mmHg",
         }
     }
@@ -116,13 +86,10 @@ fn convert(kind: MeasurementKind, value: f64, unit: Option<Unit>) -> AppResult<f
 
 #[derive(Deserialize, JsonSchema)]
 pub struct MeasurementAddArgs {
-    /// The value in `unit` ("82.4", or 180 with unit lb).
+    /// The value in `unit` ("18.5").
     pub value: f64,
-    /// Unit of `value`, default the kind's own: body_weight kg (or lb), body_height / waist_circumference cm (or in),
-    /// body_fat percent, resting_heart_rate bpm, blood pressure mmhg. lb and in are converted.
+    /// Unit of `value`, default the kind's own: body_fat percent, blood pressure mmhg.
     pub unit: Option<Unit>,
-    /// Default body_weight.
-    #[serde(default)]
     pub kind: MeasurementKind,
     /// When it was measured, if not now. RFC 3339, or local time like "2026-11-02 07:30".
     pub measured_at: Option<String>,
@@ -153,8 +120,6 @@ pub async fn measurement_add(app: &App, owner: &str, a: MeasurementAddArgs) -> A
 
 #[derive(Deserialize, JsonSchema)]
 pub struct MeasurementListArgs {
-    /// Default body_weight.
-    #[serde(default)]
     pub kind: MeasurementKind,
     /// From (inclusive). RFC 3339 or local time/date like "2026-10-01".
     pub from: Option<String>,
@@ -184,7 +149,7 @@ pub async fn measurement_list(app: &App, owner: &str, a: MeasurementListArgs) ->
 pub struct MeasurementUpdateArgs {
     pub id: i64,
     pub value: Option<f64>,
-    /// Unit of `value`; default the measurement's own (kg / cm).
+    /// Unit of `value`; default the measurement's own.
     pub unit: Option<Unit>,
     pub measured_at: Option<String>,
     pub notes: Option<String>,
@@ -236,25 +201,7 @@ pub async fn measurement_delete(app: &App, owner: &str, a: MeasurementDeleteArgs
     Ok(serde_json::json!({"deleted": v}))
 }
 
-/// Latest body weight and its change against the measurement closest to 4 weeks before it;
-/// null without data, change/since null with only one measurement. Used by training_overview.
-pub async fn body_weight_json(tx: &mut Tx, owner: &str) -> AppResult<Value> {
-    let v: Option<Value> = sqlx::query_scalar(
-        "WITH bw AS (SELECT value, measured_at FROM measurement WHERE owner_sub = $1 AND kind = 'body_weight'),
-         latest AS (SELECT * FROM bw ORDER BY measured_at DESC LIMIT 1),
-         base AS (SELECT b.* FROM bw b, latest l WHERE b.measured_at < l.measured_at
-                  ORDER BY abs(extract(epoch FROM b.measured_at - (l.measured_at - interval '28 days'))) LIMIT 1)
-         SELECT json_build_object('latest_kg', l.value, 'measured_at', l.measured_at,
-                                  'change_4w_kg', round((l.value - b.value)::numeric, 2), 'since', b.measured_at)
-         FROM latest l LEFT JOIN base b ON true",
-    )
-    .bind(owner)
-    .fetch_optional(&mut **tx)
-    .await?;
-    Ok(v.unwrap_or(Value::Null))
-}
-
-/// Per kind other than body weight: the latest value and the average over the last 28 days.
+/// Per kind: the latest value and the average over the last 28 days.
 /// Null without data. Used by training_overview.
 pub async fn latest_json(tx: &mut Tx, owner: &str) -> AppResult<Value> {
     let v: Option<Value> = sqlx::query_scalar(
@@ -262,7 +209,7 @@ pub async fn latest_json(tx: &mut Tx, owner: &str) -> AppResult<Value> {
                     'value', m.value, 'unit', m.unit, 'measured_at', m.measured_at,
                     'avg_28d', (SELECT round(avg(a.value)::numeric, 1) FROM measurement a
                                 WHERE a.owner_sub = $1 AND a.kind = m.kind AND a.measured_at >= now() - interval '28 days')))
-         FROM (SELECT DISTINCT ON (kind) * FROM measurement WHERE owner_sub = $1 AND kind <> 'body_weight'
+         FROM (SELECT DISTINCT ON (kind) * FROM measurement WHERE owner_sub = $1
                ORDER BY kind, measured_at DESC) m",
     )
     .bind(owner)
@@ -277,48 +224,23 @@ mod tests {
 
     #[test]
     fn units_convert_per_kind() {
-        let (w, h) = (MeasurementKind::BodyWeight, MeasurementKind::BodyHeight);
-        assert_eq!(convert(w, 80.0, None).ok(), Some(80.0));
-        assert!((convert(w, 180.0, Some(Unit::Lb)).ok().unwrap() - 81.646_627).abs() < 1e-6);
-        assert_eq!(convert(h, 183.0, None).ok(), Some(183.0));
-        assert!((convert(h, 72.0, Some(Unit::In)).ok().unwrap() - 182.88).abs() < 1e-9);
-        assert!(convert(h, 80.0, Some(Unit::Kg)).is_err());
-        assert!(convert(w, 183.0, Some(Unit::Cm)).is_err());
-        assert!(
-            (convert(MeasurementKind::WaistCircumference, 34.0, Some(Unit::In))
-                .ok()
-                .unwrap()
-                - 86.36)
-                .abs()
-                < 1e-9
-        );
-        assert_eq!(
-            convert(MeasurementKind::BodyFat, 18.5, Some(Unit::Percent)).ok(),
-            Some(18.5)
-        );
-        assert_eq!(
-            convert(MeasurementKind::BloodPressureSystolic, 128.0, Some(Unit::Mmhg)).ok(),
-            Some(128.0)
-        );
-        assert!(convert(MeasurementKind::RestingHeartRate, 52.0, Some(Unit::Mmhg)).is_err());
+        let (f, s) = (MeasurementKind::BodyFat, MeasurementKind::BloodPressureSystolic);
+        assert_eq!(convert(f, 18.5, None).ok(), Some(18.5));
+        assert_eq!(convert(f, 18.5, Some(Unit::Percent)).ok(), Some(18.5));
+        assert_eq!(convert(s, 128.0, Some(Unit::Mmhg)).ok(), Some(128.0));
+        assert!(convert(f, 128.0, Some(Unit::Mmhg)).is_err());
+        assert!(convert(s, 18.5, Some(Unit::Percent)).is_err());
     }
 
     #[test]
     fn stored_units_match_the_schema() {
-        // The (kind, unit) pairs measurement_check allows (migration 0011). No wildcard: a new kind must add its pair.
+        // The (kind, unit) pairs measurement_check allows (migration 0018). No wildcard: a new kind must add its pair.
         let schema_unit = |kind: MeasurementKind| match kind {
-            MeasurementKind::BodyWeight => "kg",
-            MeasurementKind::BodyHeight | MeasurementKind::WaistCircumference => "cm",
             MeasurementKind::BodyFat => "%",
-            MeasurementKind::RestingHeartRate => "bpm",
             MeasurementKind::BloodPressureSystolic | MeasurementKind::BloodPressureDiastolic => "mmHg",
         };
         for kind in [
-            MeasurementKind::BodyWeight,
-            MeasurementKind::BodyHeight,
-            MeasurementKind::WaistCircumference,
             MeasurementKind::BodyFat,
-            MeasurementKind::RestingHeartRate,
             MeasurementKind::BloodPressureSystolic,
             MeasurementKind::BloodPressureDiastolic,
         ] {
