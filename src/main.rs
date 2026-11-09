@@ -119,9 +119,14 @@ async fn main() -> anyhow::Result<()> {
     let bind = env_or("BIND_ADDR", "0.0.0.0:8080");
     tracing::info!("listening on {bind}, MCP at {public_url}/mcp");
     let listener = tokio::net::TcpListener::bind(&bind).await?;
+    // Containers stop with SIGTERM; as PID 1 an unhandled one is ignored until SIGKILL.
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     axum::serve(listener, router)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
         })
         .await?;
     Ok(())
