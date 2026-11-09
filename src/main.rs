@@ -45,13 +45,23 @@ fn parse_duration(s: &str) -> anyhow::Result<Duration> {
 
 const MAX_STALE_AFTER_SECS: u64 = 365 * 24 * 3600;
 
+/// PUBLIC_URL must be a bare origin: the well-known metadata routes are only served at the root.
+fn parse_public_url(s: &str) -> anyhow::Result<String> {
+    let url = reqwest::Url::parse(s).with_context(|| format!("PUBLIC_URL {s:?} is not a URL"))?;
+    anyhow::ensure!(
+        url.path() == "/" && url.query().is_none() && url.fragment().is_none(),
+        "PUBLIC_URL must be an origin only, with no path, query or fragment, got {s:?}"
+    );
+    Ok(s.trim_end_matches('/').to_owned())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(env_or("RUST_LOG", "info"))
         .init();
 
-    let public_url = env("PUBLIC_URL")?.trim_end_matches('/').to_owned();
+    let public_url = parse_public_url(&env("PUBLIC_URL")?)?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(10)
         .connect(&env("DATABASE_URL")?)
@@ -120,6 +130,27 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_urls() {
+        assert_eq!(
+            parse_public_url("https://gym.example.com/").unwrap(),
+            "https://gym.example.com"
+        );
+        assert_eq!(
+            parse_public_url("http://localhost:8099").unwrap(),
+            "http://localhost:8099"
+        );
+        for bad in [
+            "https://host/gym",
+            "https://host/gym/",
+            "https://host/?a=1",
+            "https://host/#x",
+            "host",
+        ] {
+            assert!(parse_public_url(bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn durations() {
