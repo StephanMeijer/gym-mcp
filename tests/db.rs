@@ -1182,7 +1182,7 @@ async fn muscle_group_volume_over_any_period(pool: PgPool) {
     assert_eq!(chest["sets_per_week"], 1.5);
     assert_eq!(
         chest["from_exercises"],
-        json!([{"exercise": "Barbell bench press", "sets": 3.0}])
+        json!([{"exercise": "Barbell bench press", "role": "primary", "sets": 3.0, "reps": 24.0}])
     );
     assert_eq!(d14["muscle_groups"].group("triceps")["sets"], 1.5);
     assert_eq!(d14["muscle_groups"].group("calves")["from_exercises"], json!([]));
@@ -1222,6 +1222,126 @@ async fn muscle_group_volume_over_any_period(pool: PgPool) {
         let m = user_msg(vol(args).await);
         assert!(m.contains(msg), "{m}");
     }
+}
+
+/// Reps and exercises per muscle, every exercise with its role, the muscle_groups filter and local-date ranges.
+#[sqlx::test]
+async fn muscle_group_volume_reps_filters_and_ranges(pool: PgPool) {
+    let app = app(pool.clone());
+    seed(&app).await;
+    for (name, primary, secondary) in [
+        ("Pec deck", json!(["chest"]), json!([])),
+        ("Incline press", json!(["chest"]), json!([])),
+        ("Dips", json!(["chest"]), json!(["triceps"])),
+        ("One-arm row", json!(["lats"]), json!(["biceps"])),
+    ] {
+        setup::exercise_create(
+            &app,
+            ME,
+            a(json!({"name": name, "muscle_groups": primary, "secondary_muscle_groups": secondary})),
+        )
+        .await
+        .unwrap();
+    }
+    workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    // Six chest exercises (more than the old top-5 cut), one working set of 10 each.
+    for ex in [
+        "Dumbbell bench press",
+        "Cable fly",
+        "Push-up",
+        "Pec deck",
+        "Incline press",
+        "Dips",
+    ] {
+        workout::set_add(
+            &app,
+            ME,
+            a(json!({"exercise": ex, "sets": [{"reps": 10, "weight_kg": 20}]})),
+        )
+        .await
+        .unwrap();
+    }
+    workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "One-arm row", "unilateral": true, "sets": [{"reps": 10, "weight_kg": 20}]})),
+    )
+    .await
+    .unwrap();
+
+    let vol = |args: Value| search::muscle_group_volume(&app, ME, a(args));
+    let v = vol(json!({"days": 3})).await.unwrap();
+    let rows = &v["muscle_groups"];
+    let chest = rows.group("chest");
+    assert_eq!(
+        (chest["sets"].clone(), chest["reps"].clone(), chest["exercises"].clone()),
+        (json!(6.0), json!(60.0), json!(6))
+    );
+    assert_eq!(chest["from_exercises"].as_array().unwrap().len(), 6);
+    // Primary counts 1, secondary 0.5, for reps as for sets.
+    let triceps = rows.group("triceps");
+    assert_eq!(
+        (
+            triceps["sets"].clone(),
+            triceps["reps"].clone(),
+            triceps["exercises"].clone()
+        ),
+        (json!(2.5), json!(25.0), json!(3))
+    );
+    let dips = triceps["from_exercises"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["exercise"] == "Dips")
+        .unwrap();
+    assert_eq!(
+        dips,
+        &json!({"exercise": "Dips", "role": "secondary", "sets": 0.5, "reps": 5.0})
+    );
+    // Unilateral: once per side.
+    assert_eq!(
+        (rows.group("lats")["sets"].clone(), rows.group("lats")["reps"].clone()),
+        (json!(2.0), json!(20.0))
+    );
+    assert_eq!(rows.group("biceps")["reps"], 10.0);
+    assert_eq!(rows.group("calves")["reps"], 0.0);
+    assert_eq!(rows.group("calves")["exercises"], 0);
+
+    // Filter: coarse names expand, overlap collapses, rows keep the canonical order.
+    let some = vol(json!({"days": 3, "muscle_groups": ["triceps", "back", "lats"]}))
+        .await
+        .unwrap();
+    let names: Vec<&str> = some["muscle_groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["muscle_group"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["lats", "upper_back", "lower_back", "triceps"]);
+    let msg = user_msg(vol(json!({"muscle_groups": ["pecs"]})).await);
+    assert!(msg.starts_with("unknown muscle group 'pecs'"), "{msg}");
+    let msg = user_msg(vol(json!({"muscle_groups": []})).await);
+    assert!(msg.starts_with("muscle_groups must not be empty"), "{msg}");
+
+    // Any range with local dates, in the user's timezone (Europe/Amsterdam here): today's sets fall in
+    // [today, tomorrow), and the range starts at local midnight.
+    let today: (String, String) = sqlx::query_as(
+        "SELECT to_char(d, 'YYYY-MM-DD'), to_char(d + 1, 'YYYY-MM-DD')
+         FROM (SELECT (now() AT TIME ZONE 'Europe/Amsterdam')::date AS d) x",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let day = vol(json!({"from": today.0, "to": today.1})).await.unwrap();
+    assert_eq!(day["muscle_groups"].group("chest")["sets"], 6.0);
+    let midnight: DateTime<Utc> = sqlx::query_scalar("SELECT date_trunc('day', now(), 'Europe/Amsterdam')")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let from = DateTime::parse_from_rfc3339(day["from"].as_str().unwrap()).unwrap();
+    assert_eq!(from.with_timezone(&Utc), midnight);
+    let before = vol(json!({"from": "2026-01-01", "to": today.0})).await.unwrap();
+    assert_eq!(before["muscle_groups"].group("chest")["sets"], 0.0);
 }
 
 #[sqlx::test]

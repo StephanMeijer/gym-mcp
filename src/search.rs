@@ -174,14 +174,21 @@ async fn window(
     Ok((lo, hi))
 }
 
-/// Per muscle group in `[lo, hi)`: weighted sets (primary 1, secondary 0.5), sets per week, local training
-/// days and average RPE (primary only), the exercises behind the sets, and all-time days since (primary).
+/// Per muscle group in `groups` (rows in that order) over `[lo, hi)`: weighted sets and reps (primary 1,
+/// secondary 0.5; per side for unilateral sets; sets logged without reps, such as timed holds, add no reps),
+/// sets per week, distinct exercises, local training days and
+/// average RPE (primary only), every exercise behind it with its role, and all-time days since (primary).
 /// Strength exercises only. Shared by training_overview and muscle_group_volume.
-async fn muscle_volume(tx: &mut Tx, owner: &str, lo: DateTime<Utc>, hi: DateTime<Utc>) -> AppResult<Value> {
-    let groups: Vec<String> = MUSCLE_GROUPS.iter().map(|s| s.to_string()).collect();
+async fn muscle_volume(
+    tx: &mut Tx,
+    owner: &str,
+    lo: DateTime<Utc>,
+    hi: DateTime<Utc>,
+    groups: &[String],
+) -> AppResult<Value> {
     Ok(sqlx::query_scalar(AssertSqlSafe(format!(
         "WITH hits AS (
-            SELECT g.muscle_group, g.weight, s.performed_at, s.rpe, e.name AS exercise, {SIDES} AS sides
+            SELECT g.muscle_group, g.weight, s.performed_at, s.rpe, s.reps, e.name AS exercise, {SIDES} AS sides
             FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN exercise e ON e.id = s.exercise_id
             CROSS JOIN LATERAL (SELECT unnest(e.muscle_groups), 1.0
                                 UNION ALL SELECT unnest(e.secondary_muscle_groups), 0.5) g(muscle_group, weight)
@@ -191,25 +198,33 @@ async fn muscle_volume(tx: &mut Tx, owner: &str, lo: DateTime<Utc>, hi: DateTime
          SELECT json_build_object(
             'from', $2::timestamptz, 'to', $3::timestamptz, 'days', round((SELECT days FROM span)::numeric, 1),
             'muscle_groups', json_agg(json_build_object(
-                'muscle_group', m.muscle_group, 'sets', x.sets,
+                'muscle_group', m.muscle_group, 'sets', x.sets, 'reps', x.reps,
                 'sets_per_week', round(x.sets / (SELECT days FROM span)::numeric * 7, 1),
+                'exercises', x.exercises,
                 'train_days', (SELECT count(DISTINCT performed_at::date) FROM win
                                WHERE muscle_group = m.muscle_group AND weight = 1),
                 'avg_rpe', (SELECT round(avg(rpe)::numeric, 1) FROM win WHERE muscle_group = m.muscle_group AND weight = 1),
                 'days_since', (SELECT current_date - max(performed_at)::date FROM hits
                                WHERE muscle_group = m.muscle_group AND weight = 1),
+                -- An exercise can't list a muscle as both primary and secondary, so weight gives one role per row.
                 'from_exercises', coalesce((
-                    SELECT json_agg(json_build_object('exercise', exercise, 'sets', sets) ORDER BY sets DESC, exercise)
-                    FROM (SELECT exercise, sum(weight * sides) AS sets FROM win WHERE muscle_group = m.muscle_group
-                          GROUP BY exercise ORDER BY sets DESC, exercise LIMIT 5) t), '[]'::json))
+                    SELECT json_agg(json_build_object('exercise', exercise,
+                                                      'role', CASE WHEN weight = 1 THEN 'primary' ELSE 'secondary' END,
+                                                      'sets', sets, 'reps', reps) ORDER BY sets DESC, exercise)
+                    FROM (SELECT exercise, weight, sum(weight * sides) AS sets,
+                                 coalesce(sum(weight * reps * sides), 0) AS reps
+                          FROM win WHERE muscle_group = m.muscle_group GROUP BY exercise, weight) t), '[]'::json))
                 ORDER BY m.i))
          FROM unnest($4::text[]) WITH ORDINALITY m(muscle_group, i)
-         CROSS JOIN LATERAL (SELECT coalesce(sum(weight * sides), 0) AS sets FROM win WHERE muscle_group = m.muscle_group) x"
+         CROSS JOIN LATERAL (SELECT coalesce(sum(weight * sides), 0) AS sets,
+                                    coalesce(sum(weight * reps * sides), 0) AS reps,
+                                    count(DISTINCT exercise) AS exercises
+                             FROM win WHERE muscle_group = m.muscle_group) x"
     )))
     .bind(owner)
     .bind(lo)
     .bind(hi)
-    .bind(&groups)
+    .bind(groups)
     .fetch_one(&mut **tx)
     .await?)
 }
@@ -218,8 +233,9 @@ async fn muscle_volume(tx: &mut Tx, owner: &str, lo: DateTime<Utc>, hi: DateTime
 async fn muscle_groups_overview(tx: &mut Tx, owner: &str) -> AppResult<Value> {
     let (lo7, hi) = window(tx, Some(7), &None, &None).await?;
     let lo28 = hi - chrono::Duration::days(28);
-    let w7 = muscle_volume(tx, owner, lo7, hi).await?;
-    let w28 = muscle_volume(tx, owner, lo28, hi).await?;
+    let all: Vec<String> = MUSCLE_GROUPS.iter().map(|s| s.to_string()).collect();
+    let w7 = muscle_volume(tx, owner, lo7, hi, &all).await?;
+    let w28 = muscle_volume(tx, owner, lo28, hi, &all).await?;
     // Both windows list every group in MUSCLE_GROUPS order, so rows pair up by index.
     let rows = (0..MUSCLE_GROUPS.len())
         .map(|i| {
@@ -237,10 +253,13 @@ async fn muscle_groups_overview(tx: &mut Tx, owner: &str) -> AppResult<Value> {
 pub struct MuscleVolumeArgs {
     /// The last N days up to now (1-365). Default 7 when from is not given.
     pub days: Option<i64>,
-    /// Start of a fixed period, inclusive. RFC 3339 or local ("2026-10-01").
+    /// Start of a fixed period, inclusive. RFC 3339 or local ("2026-10-01"): this week = from Monday's date,
+    /// last month = from the 1st of last month to the 1st of this month.
     pub from: Option<String>,
     /// End of a fixed period, exclusive. Default now.
     pub to: Option<String>,
+    /// Only these muscle groups (default all). Coarse names work too: back, shoulders, legs, arms.
+    pub muscle_groups: Option<Vec<String>>,
 }
 
 pub async fn muscle_group_volume(app: &App, owner: &str, a: MuscleVolumeArgs) -> AppResult<Value> {
@@ -253,14 +272,32 @@ pub async fn muscle_group_volume(app: &App, owner: &str, a: MuscleVolumeArgs) ->
     if a.days.is_some_and(|d| !(1..=365).contains(&d)) {
         return Err(user_err("days must be between 1 and 365"));
     }
+    if a.muscle_groups.as_ref().is_some_and(Vec::is_empty) {
+        return Err(user_err("muscle_groups must not be empty; leave it out for all"));
+    }
     let days = if a.from.is_none() {
         Some(a.days.unwrap_or(7))
     } else {
         None
     };
+    let groups: Vec<String> = match &a.muscle_groups {
+        None => MUSCLE_GROUPS.iter().map(|s| s.to_string()).collect(),
+        Some(wanted) => {
+            let mut picked = Vec::new();
+            for g in wanted {
+                picked.extend(setup::expand_muscle_group(g)?);
+            }
+            // MUSCLE_GROUPS order, each once, whatever order or overlap ("back", "lats") was asked for.
+            MUSCLE_GROUPS
+                .iter()
+                .filter(|g| picked.iter().any(|p| p == *g))
+                .map(|s| s.to_string())
+                .collect()
+        }
+    };
     let mut tx = db::begin_read(app, owner).await?;
     let (lo, hi) = window(&mut tx, days, &a.from, &a.to).await?;
-    let v = muscle_volume(&mut tx, owner, lo, hi).await?;
+    let v = muscle_volume(&mut tx, owner, lo, hi, &groups).await?;
     tx.commit().await?;
     Ok(v)
 }
