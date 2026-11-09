@@ -68,7 +68,7 @@ docker buildx create --name rootless --driver remote tcp://127.0.0.1:1234
 docker buildx build --builder rootless --load -t gym-mcp .
 ```
 
-The host needs user namespaces. On Kubernetes, `docker buildx create --driver kubernetes --driver-opt rootless=true` does the same.
+The host needs user namespaces; on Ubuntu 23.10+ that means `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0` (or an AppArmor profile allowing `userns`). On Kubernetes, `docker buildx create --driver kubernetes --driver-opt rootless=true` does the same.
 
 ## Configuration
 
