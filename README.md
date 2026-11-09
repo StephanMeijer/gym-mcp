@@ -64,14 +64,23 @@ DATABASE_URL=postgres://gym:gym@localhost:5432/gym cargo test
 | Env | |
 |---|---|
 | `DATABASE_URL` | required; migrations run on startup. For an encrypted-only Postgres add `?sslmode=verify-full` (or `require` to skip certificate checks). A private CA goes in `&sslrootcert=/path/ca.crt`, or set `SSL_CERT_FILE`; otherwise the system CA store is used. The default `prefer` falls back to plaintext |
-| `PUBLIC_URL` | required; e.g. `https://gym.example.com`. Used as the OAuth `resource`, the required token `aud`, and the allowed `Host` |
+| `PUBLIC_URL` | required; e.g. `https://gym.example.com`. Used as the OAuth `resource`, the required token `aud` (`PUBLIC_URL/api` for `/api`), and the allowed `Host` |
 | `OIDC_ISSUER` | required unless `DEV_SUB` is set; your Authelia URL, e.g. `https://auth.example.com` |
 | `BIND_ADDR` | default `0.0.0.0:8080` |
 | `DEFAULT_TIMEZONE` | default `Europe/Amsterdam` |
 | `WORKOUT_STALE_AFTER` | default `3h` (`90m` and `45s` also work); at most `8760h` (365 days) |
 | `DEV_SUB` | **local only**: turns off auth and acts as this user |
 
-Endpoints: `/mcp` (Streamable HTTP, stateless), `/.well-known/oauth-protected-resource`, `/healthz`. Put TLS in front, e.g. your ingress.
+Endpoints: `/mcp` (Streamable HTTP, stateless), `/api/v1/tools` (for apps, see below), `/.well-known/oauth-protected-resource` (and `…/mcp`, `…/api`), `/healthz`. Put TLS in front, e.g. your ingress.
+
+### App API
+
+The same tools as MCP, as plain JSON over HTTP, with the same names, arguments and results:
+
+- `GET /api/v1/tools` lists every tool with its `inputSchema`.
+- `POST /api/v1/tools/{name}` runs one: the body holds the arguments (an empty body means `{}`), and the response is the tool's output. `400 {"error": …}` means bad input, `404` an unknown tool.
+
+Tokens need `aud` = `PUBLIC_URL/api`. An MCP token doesn't work here, and an app token doesn't work on `/mcp`.
 
 ## Authelia
 
@@ -97,7 +106,23 @@ identity_providers:
         token_endpoint_auth_method: 'client_secret_post'
       # ChatGPT: the same, with client_id 'gym-mcp-chatgpt' and
       # redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect']
+      - client_id: 'gym-android'                 # the phone app, for /api
+        client_name: 'Gym logbook (app)'
+        public: true
+        token_endpoint_auth_method: 'none'
+        authorization_policy: 'two_factor'
+        require_pkce: true
+        pkce_challenge_method: 'S256'
+        redirect_uris: ['com.stephanmeijer.gym:/oauth/callback']   # must match the app's redirect scheme
+        scopes: ['openid', 'offline_access']
+        grant_types: ['authorization_code', 'refresh_token']
+        response_types: ['code']
+        audience: ['https://gym.example.com/api']   # = PUBLIC_URL + /api
+        access_token_signed_response_alg: 'RS256'
+        consent_mode: 'pre-configured'
 ```
+
+The app needs only `PUBLIC_URL`: it finds the issuer from `/.well-known/oauth-protected-resource/api` (`authorization_servers`) and the issuer's OIDC discovery.
 
 This needs Authelia ≥ 4.39 for JWT access tokens. Check the redirect URIs against Claude's and ChatGPT's current docs.
 

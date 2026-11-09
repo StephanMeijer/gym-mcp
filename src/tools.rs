@@ -508,9 +508,65 @@ impl ServerHandler for GymServer {
     }
 }
 
+/// The same tools for apps over `/api`: names, arguments and results exactly as over MCP.
+impl GymServer {
+    /// Every tool with its input JSON Schema, from the same structs as MCP's `tools/list`.
+    pub fn tool_list() -> Vec<rmcp::model::Tool> {
+        Self::tool_router().list_all()
+    }
+}
+
+/// Runs tool `name` with JSON `args` as `owner`; `None` if there is no such tool.
+pub async fn call_api(app: &App, owner: &str, name: &str, args: Value) -> Option<AppResult<Value>> {
+    macro_rules! with_args {
+        ($f:ident) => {
+            match serde_json::from_value(args) {
+                Ok(a) => $f(app, owner, a).await,
+                Err(e) => Err(AppError::User(format!("invalid arguments: {e}"))),
+            }
+        };
+    }
+    Some(match name {
+        "settings_get" => settings_get(app, owner).await,
+        "settings_update" => with_args!(settings_update),
+        "gym_create" => with_args!(gym_create),
+        "gym_update" => with_args!(gym_update),
+        "gym_get" => with_args!(gym_get),
+        "gym_list" => gym_list(app, owner).await,
+        "exercise_create" => with_args!(exercise_create),
+        "exercise_update" => with_args!(exercise_update),
+        "exercise_search" => with_args!(exercise_search),
+        "workout_start" => with_args!(start),
+        "workout_add_past" => with_args!(add_past),
+        "workout_finish" => with_args!(finish),
+        "workout_update" => with_args!(update),
+        "workout_current" => current(app, owner).await,
+        "workout_list" => with_args!(workout_list),
+        "set_add" => with_args!(set_add),
+        "set_update" => with_args!(set_update),
+        "set_delete" => with_args!(set_delete),
+        "measurement_add" => with_args!(measurement_add),
+        "measurement_list" => with_args!(measurement_list),
+        "measurement_update" => with_args!(measurement_update),
+        "measurement_delete" => with_args!(measurement_delete),
+        "body_note_add" => with_args!(body_note_add),
+        "body_note_list" => with_args!(body_note_list),
+        "body_note_update" => with_args!(body_note_update),
+        "body_note_delete" => with_args!(body_note_delete),
+        "training_overview" => with_args!(training_overview),
+        "muscle_group_volume" => with_args!(muscle_group_volume),
+        "search" => with_args!(search),
+        "set_search" => with_args!(set_search),
+        "progress" => with_args!(progress),
+        "personal_records" => with_args!(personal_records),
+        "exercise_alternatives" => with_args!(exercise_alternatives),
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::GymServer;
+    use super::{GymServer, call_api};
 
     #[test]
     fn every_tool_is_annotated_and_closed_world() {
@@ -542,5 +598,23 @@ mod tests {
         );
         assert_eq!(hint("set_add").idempotent_hint, Some(false));
         assert_eq!(hint("workout_start").idempotent_hint, Some(true));
+    }
+
+    #[tokio::test]
+    async fn the_api_dispatches_every_tool() {
+        // Nothing listens on port 1: tools that reach the database fail, but none may be unknown.
+        let app = crate::db::App {
+            pool: sqlx::postgres::PgPoolOptions::new()
+                .acquire_timeout(std::time::Duration::from_millis(100))
+                .connect_lazy("postgres://localhost:1/none")
+                .unwrap(),
+            default_timezone: "Europe/Amsterdam".into(),
+            stale_after: std::time::Duration::from_secs(3600),
+        };
+        for t in GymServer::tool_list() {
+            let r = call_api(&app, "alice", &t.name, serde_json::json!({})).await;
+            assert!(r.is_some(), "{} is not served over /api", t.name);
+        }
+        assert!(call_api(&app, "alice", "nope", serde_json::json!({})).await.is_none());
     }
 }

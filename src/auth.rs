@@ -173,11 +173,19 @@ impl Auth {
             .await?)
     }
 
+    /// RFC 9728 §3.1: the well-known path goes between the origin and the resource's path.
     pub fn metadata_url(&self) -> String {
-        format!(
-            "{}/.well-known/oauth-protected-resource",
-            self.resource.trim_end_matches('/')
-        )
+        match reqwest::Url::parse(&self.resource) {
+            Ok(url) => format!(
+                "{}/.well-known/oauth-protected-resource{}",
+                url.origin().ascii_serialization(),
+                url.path().trim_end_matches('/')
+            ),
+            Err(_) => format!(
+                "{}/.well-known/oauth-protected-resource",
+                self.resource.trim_end_matches('/')
+            ),
+        }
     }
 }
 
@@ -217,14 +225,27 @@ pub async fn require_bearer(State(auth): State<Arc<Auth>>, mut req: Request, nex
 }
 
 /// The HTTP surface: `mcp` behind the bearer check; metadata and health stay open.
-pub fn router(mcp: Router, auth: Arc<Auth>) -> Router {
+/// `/mcp` guarded by `auth`, `/api` by `api_auth`: each its own audience, so tokens don't cross over.
+pub fn router(mcp: Router, auth: Arc<Auth>, api: Router, api_auth: Arc<Auth>) -> Router {
+    let api = api.layer(middleware::from_fn_with_state(api_auth.clone(), require_bearer));
     Router::new()
         .nest_service("/mcp", mcp)
         .layer(middleware::from_fn_with_state(auth.clone(), require_bearer))
-        .route("/.well-known/oauth-protected-resource", get(metadata))
-        .route("/.well-known/oauth-protected-resource/mcp", get(metadata))
+        // After the MCP auth layer, which only wraps routes added before it.
+        .nest("/api", api)
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(metadata).with_state(auth.clone()),
+        )
+        .route(
+            "/.well-known/oauth-protected-resource/mcp",
+            get(metadata).with_state(auth),
+        )
+        .route(
+            "/.well-known/oauth-protected-resource/api",
+            get(metadata).with_state(api_auth),
+        )
         .route("/healthz", get(|| async { "ok" }))
-        .with_state(auth)
 }
 
 fn unauthorized(auth: &Auth, error: Option<&str>) -> Response {
@@ -279,11 +300,15 @@ mod tests {
 
     /// A token from `iss`, signed with the fixture key under `kid`.
     fn token(iss: &str, kid: &str) -> String {
+        token_for(iss, kid, AUD)
+    }
+
+    fn token_for(iss: &str, kid: &str, aud: &str) -> String {
         let mut h = Header::new(Algorithm::RS256);
         h.kid = Some(kid.into());
         let key = EncodingKey::from_rsa_pem(include_bytes!("../tests/fixtures/test_rsa.pem")).unwrap();
         let exp = chrono::Utc::now().timestamp() + 300;
-        encode(&h, &json!({"iss": iss, "aud": [AUD], "sub": "alice", "exp": exp}), &key).unwrap()
+        encode(&h, &json!({"iss": iss, "aud": [aud], "sub": "alice", "exp": exp}), &key).unwrap()
     }
 
     #[tokio::test]
@@ -303,14 +328,22 @@ mod tests {
     }
 
     /// Serves `router` with a stub /mcp that answers with the caller's sub. Returns its URL.
+    const API_AUD: &str = "https://gym.example.com/api";
+
     async fn serve(auth: Auth) -> String {
-        let mcp = Router::new().route(
-            "/",
-            get(|axum::Extension(o): axum::Extension<Owner>| async move { o.0 }),
-        );
+        let api_auth = match &auth.dev_sub {
+            Some(sub) => Auth::dev(sub.clone(), API_AUD.into()),
+            None => Auth::discover(auth.issuer.clone(), API_AUD.into()).await.unwrap(),
+        };
+        let whoami = || {
+            Router::new().route(
+                "/",
+                get(|axum::Extension(o): axum::Extension<Owner>| async move { o.0 }),
+            )
+        };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
-        let app = router(mcp, Arc::new(auth));
+        let app = router(whoami(), Arc::new(auth), whoami(), Arc::new(api_auth));
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         url
     }
@@ -350,6 +383,36 @@ mod tests {
             .unwrap();
         assert_eq!(ok.status(), StatusCode::OK);
         assert_eq!(ok.text().await.unwrap(), "alice");
+    }
+
+    #[tokio::test]
+    async fn mcp_and_api_tokens_do_not_cross_over() {
+        let (base, _) = issuer(None).await;
+        let url = serve(Auth::discover(base.clone(), AUD.into()).await.unwrap()).await;
+        let http = reqwest::Client::new();
+        let status = |path: &'static str, aud: &'static str| {
+            let req = http
+                .get(format!("{url}{path}"))
+                .bearer_auth(token_for(&base, "test", aud));
+            async move { req.send().await.unwrap().status() }
+        };
+        assert_eq!(status("/mcp", AUD).await, StatusCode::OK);
+        assert_eq!(status("/api", API_AUD).await, StatusCode::OK);
+        assert_eq!(status("/mcp", API_AUD).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status("/api", AUD).await, StatusCode::UNAUTHORIZED);
+
+        let none = http.get(format!("{url}/api")).send().await.unwrap();
+        assert_eq!(
+            none.headers()[header::WWW_AUTHENTICATE],
+            "Bearer resource_metadata=\"https://gym.example.com/.well-known/oauth-protected-resource/api\""
+        );
+        let meta: serde_json::Value = reqwest::get(format!("{url}/.well-known/oauth-protected-resource/api"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(meta["resource"], API_AUD);
     }
 
     #[tokio::test]
