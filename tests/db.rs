@@ -842,6 +842,22 @@ async fn muscle_groups_primary_secondary_and_aliases(pool: PgPool) {
     )
     .await;
     assert!(matches!(stored_overlap, Err(AppError::User(_))), "{stored_overlap:?}");
+    for args in [
+        json!({"name": "Fly", "muscle_groups": ["chest", "chest"]}),
+        json!({"name": "Fly", "muscle_groups": ["chest"], "secondary_muscle_groups": ["front_delts", "front_delts"]}),
+    ] {
+        let twice = user_msg(setup::exercise_create(&app, ME, a(args)).await);
+        assert!(twice.contains("listed twice"), "{twice}");
+    }
+    let twice = user_msg(
+        setup::exercise_update(
+            &app,
+            ME,
+            a(json!({"exercise": "lat pulldown", "muscle_groups": ["lats", "lats"]})),
+        )
+        .await,
+    );
+    assert_eq!(twice, "'lats' is listed twice");
     let bad_filter = user_msg(search::set_search(&app, ME, a(json!({"muscle_group": "pecs"}))).await);
     assert!(bad_filter.contains("unknown muscle group"), "{bad_filter}");
 }
@@ -903,6 +919,61 @@ async fn gym_list_is_sorted_by_name_with_last_workout(pool: PgPool) {
     assert!(!gyms[1]["last_workout_at"].is_null());
     assert!(gyms[0]["last_workout_at"].is_null());
     assert_eq!(setup::gym_list(&app, "bob").await.unwrap(), json!([]));
+}
+
+/// 0019 removes duplicate muscles stored before the app rejected them, so volume counts each exercise once.
+#[sqlx::test]
+async fn migration_dedupes_muscle_groups(pool: PgPool) {
+    let app = app(pool.clone());
+    seed(&app).await;
+    sqlx::query(
+        "INSERT INTO exercise (owner_sub, name, muscle_groups, secondary_muscle_groups)
+         VALUES ($1, 'Twice', '{chest,triceps,chest}', '{front_delts,front_delts}')",
+    )
+    .bind(ME)
+    .execute(&pool)
+    .await
+    .unwrap();
+    workout::start(&app, ME, a(json!({"gym": "ndsm"}))).await.unwrap();
+    workout::set_add(
+        &app,
+        ME,
+        a(json!({"exercise": "Twice", "sets": [{"reps": 10, "weight_kg": 20}]})),
+    )
+    .await
+    .unwrap();
+    let chest = || async {
+        search::muscle_group_volume(&app, ME, a(json!({"muscle_groups": ["chest"]})))
+            .await
+            .unwrap()["muscle_groups"][0]["sets"]
+            .clone()
+    };
+    assert_eq!(chest().await, 2.0, "the duplicate counts twice before the fix");
+
+    let groups = || async {
+        sqlx::query_as::<_, (String, Vec<String>, Vec<String>)>(
+            "SELECT name, muscle_groups, secondary_muscle_groups FROM exercise WHERE name IN ('Twice', 'Leg press') ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    };
+    let before = groups().await;
+    sqlx::raw_sql(include_str!("../migrations/0019_dedupe_muscle_groups.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let after = groups().await;
+    assert_eq!(after[0], before[0], "a clean row is untouched");
+    assert_eq!(
+        after[1],
+        (
+            "Twice".into(),
+            vec!["chest".to_string(), "triceps".into()],
+            vec!["front_delts".to_string()]
+        )
+    );
+    assert_eq!(chest().await, 1.0);
 }
 
 #[sqlx::test(migrations = false)]

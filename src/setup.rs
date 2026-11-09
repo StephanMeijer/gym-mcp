@@ -76,6 +76,16 @@ fn check_muscle_groups(primary: &[String], secondary: &[String]) -> AppResult<()
             None => unknown_group(bad),
         });
     }
+    for list in [primary, secondary] {
+        if let Some(twice) = list
+            .iter()
+            .enumerate()
+            .find(|(i, g)| list[..*i].contains(g))
+            .map(|(_, g)| g)
+        {
+            return Err(user_err(format!("'{twice}' is listed twice")));
+        }
+    }
     if let Some(both) = primary.iter().find(|g| secondary.contains(g)) {
         return Err(user_err(format!("'{both}' can't be both primary and secondary")));
     }
