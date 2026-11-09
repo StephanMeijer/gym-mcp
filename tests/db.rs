@@ -1320,6 +1320,8 @@ async fn muscle_group_volume_reps_filters_and_ranges(pool: PgPool) {
     assert_eq!(names, ["lats", "upper_back", "lower_back", "triceps"]);
     let msg = user_msg(vol(json!({"muscle_groups": ["pecs"]})).await);
     assert!(msg.starts_with("unknown muscle group 'pecs'"), "{msg}");
+    let msg = user_msg(vol(json!({"muscle_groups": []})).await);
+    assert!(msg.starts_with("muscle_groups must not be empty"), "{msg}");
 
     // Any range with local dates, in the user's timezone (Europe/Amsterdam here): today's sets fall in
     // [today, tomorrow), and the range starts at local midnight.

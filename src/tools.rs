@@ -448,7 +448,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "One row per muscle group over a period (default the last 7 days; or days, or any from-to range such as this week or last month), optionally only some muscle_groups: weighted sets and reps (primary 1, secondary 0.5), sets per week, distinct exercises, training days, average RPE, days since, and every exercise behind it with its role.",
+        description = "One row per muscle group over a period (default the last 7 days; or days, or any from-to range such as this week or last month), optionally only some muscle_groups: weighted sets and reps (primary 1, secondary 0.5; timed sets without reps add no reps), sets per week, distinct exercises, training days, average RPE, days since, and every exercise behind it with its role.",
         annotations(
             title = "Muscle volume over a period",
             read_only_hint = true,

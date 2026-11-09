@@ -175,7 +175,8 @@ async fn window(
 }
 
 /// Per muscle group in `groups` (rows in that order) over `[lo, hi)`: weighted sets and reps (primary 1,
-/// secondary 0.5; per side for unilateral sets), sets per week, distinct exercises, local training days and
+/// secondary 0.5; per side for unilateral sets; sets logged without reps, such as timed holds, add no reps),
+/// sets per week, distinct exercises, local training days and
 /// average RPE (primary only), every exercise behind it with its role, and all-time days since (primary).
 /// Strength exercises only. Shared by training_overview and muscle_group_volume.
 async fn muscle_volume(
@@ -270,6 +271,9 @@ pub async fn muscle_group_volume(app: &App, owner: &str, a: MuscleVolumeArgs) ->
     }
     if a.days.is_some_and(|d| !(1..=365).contains(&d)) {
         return Err(user_err("days must be between 1 and 365"));
+    }
+    if a.muscle_groups.as_ref().is_some_and(Vec::is_empty) {
+        return Err(user_err("muscle_groups must not be empty; leave it out for all"));
     }
     let days = if a.from.is_none() {
         Some(a.days.unwrap_or(7))
