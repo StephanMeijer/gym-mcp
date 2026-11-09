@@ -42,7 +42,28 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+      # buildx's default docker-container driver always runs buildkitd privileged, so run a
+      # rootless one ourselves, unprivileged, and point buildx at it (remote driver).
+      - name: Start rootless buildkitd
+        run: |
+          set -euo pipefail
+          docker run -d --name buildkitd \
+            --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+            -p 127.0.0.1:1234:1234 "${BUILDKIT_IMAGE}" \
+            --oci-worker-no-process-sandbox --addr tcp://0.0.0.0:1234
+          for _ in $(seq 30); do
+            docker exec buildkitd buildctl --addr tcp://127.0.0.1:1234 debug workers >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec buildkitd buildctl --addr tcp://127.0.0.1:1234 debug workers \
+            || { docker logs buildkitd; exit 1; }
+          echo "buildkitd runs as uid $(docker exec buildkitd id -u)"
+        env:
+          BUILDKIT_IMAGE: moby/buildkit:v0.34.2-rootless@sha256:c8252268760e1baba80780d63d738ef9f260fb7c7c0973c78494cb9ddd99eda1
       - uses: docker/setup-buildx-action@v4.4.1
+        with:
+          driver: remote
+          endpoint: tcp://127.0.0.1:1234
       - name: Refuse a release build without a version tag
         if: inputs.push
         env:

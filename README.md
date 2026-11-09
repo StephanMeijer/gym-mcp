@@ -59,6 +59,17 @@ docker compose up -d db
 DATABASE_URL=postgres://gym:gym@localhost:5432/gym cargo test
 ```
 
+To build the image without root or a privileged container (CI does this too), run a rootless BuildKit and point buildx at it:
+
+```sh
+docker run -d --name buildkitd --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+  -p 127.0.0.1:1234:1234 moby/buildkit:v0.34.2-rootless --oci-worker-no-process-sandbox --addr tcp://0.0.0.0:1234
+docker buildx create --name rootless --driver remote tcp://127.0.0.1:1234
+docker buildx build --builder rootless --load -t gym-mcp .
+```
+
+The host needs user namespaces. On Kubernetes, `docker buildx create --driver kubernetes --driver-opt rootless=true` does the same.
+
 ## Configuration
 
 | Env | |
