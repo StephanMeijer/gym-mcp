@@ -1,3 +1,4 @@
+pub mod api;
 pub mod auth;
 pub mod body_note;
 pub mod db;

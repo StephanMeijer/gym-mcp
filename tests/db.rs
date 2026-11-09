@@ -2174,3 +2174,57 @@ async fn infinite_times_are_user_errors(pool: PgPool) {
         .unwrap();
     assert!(v.is_object(), "{v}");
 }
+
+/// `/api/v1/tools`: the MCP tools as plain JSON over HTTP, for apps.
+#[sqlx::test]
+async fn api_serves_the_tools_over_http(pool: PgPool) {
+    use gym_mcp::{api, auth::Owner};
+    let router = api::router(app(pool)).layer(axum::middleware::from_fn(
+        |mut req: axum::extract::Request, next: axum::middleware::Next| async move {
+            req.extensions_mut().insert(Owner(ME.into()));
+            next.run(req).await
+        },
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1/tools", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let http = reqwest::Client::new();
+    let post = |name: &str, body: &'static str| {
+        http.post(format!("{url}/{name}"))
+            .header("content-type", "application/json; charset=utf-8")
+            .body(body)
+            .send()
+    };
+
+    let tools: Value = http.get(&url).send().await.unwrap().json().await.unwrap();
+    assert!(
+        tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "set_add" && t["inputSchema"].is_object())
+    );
+
+    let created = post("gym_create", r#"{"name": "Trainmore NDSM"}"#).await.unwrap();
+    assert_eq!(created.status(), 200);
+    let gyms: Value = post("gym_list", "").await.unwrap().json().await.unwrap();
+    assert_eq!(gyms[0]["name"], "Trainmore NDSM", "{gyms}");
+
+    let bad = post("gym_create", r#"{"nmae": 1}"#).await.unwrap();
+    assert_eq!(bad.status(), 400);
+    let err: Value = bad.json().await.unwrap();
+    assert!(err["error"].as_str().unwrap().starts_with("invalid arguments"), "{err}");
+    assert_eq!(post("gym_get", "{not json").await.unwrap().status(), 400);
+    assert_eq!(post("nope", "").await.unwrap().status(), 404);
+    // A cross-site "simple request" must not run a tool.
+    let plain = http
+        .post(format!("{url}/gym_create"))
+        .header("content-type", "text/plain")
+        .body(r#"{"name": "Evil"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(plain.status(), 415);
+    let bare = http.post(format!("{url}/workout_finish")).send().await.unwrap();
+    assert_eq!(bare.status(), 415);
+}

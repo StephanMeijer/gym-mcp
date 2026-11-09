@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use gym_mcp::{
+    api,
     auth::{self, Auth},
     db::App,
     tools::GymServer,
@@ -44,13 +45,23 @@ fn parse_duration(s: &str) -> anyhow::Result<Duration> {
 
 const MAX_STALE_AFTER_SECS: u64 = 365 * 24 * 3600;
 
+/// PUBLIC_URL must be a bare origin: the well-known metadata routes are only served at the root.
+fn parse_public_url(s: &str) -> anyhow::Result<String> {
+    let url = reqwest::Url::parse(s).with_context(|| format!("PUBLIC_URL {s:?} is not a URL"))?;
+    anyhow::ensure!(
+        url.path() == "/" && url.query().is_none() && url.fragment().is_none(),
+        "PUBLIC_URL must be an origin only, with no path, query or fragment, got {s:?}"
+    );
+    Ok(s.trim_end_matches('/').to_owned())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(env_or("RUST_LOG", "info"))
         .init();
 
-    let public_url = env("PUBLIC_URL")?.trim_end_matches('/').to_owned();
+    let public_url = parse_public_url(&env("PUBLIC_URL")?)?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(10)
         .connect(&env("DATABASE_URL")?)
@@ -62,13 +73,21 @@ async fn main() -> anyhow::Result<()> {
         stale_after: parse_duration(&env_or("WORKOUT_STALE_AFTER", "3h"))?,
     };
 
-    let auth = Arc::new(match std::env::var("DEV_SUB") {
+    // MCP tokens have `aud` = PUBLIC_URL, app tokens PUBLIC_URL/api, so neither works on the other's endpoint.
+    let api_url = format!("{public_url}/api");
+    let (auth, api_auth) = match std::env::var("DEV_SUB") {
         Ok(sub) => {
             tracing::warn!("DEV_SUB is set: authentication is DISABLED, every request acts as {sub:?}");
-            Auth::dev(sub, public_url.clone())
+            (Auth::dev(sub.clone(), public_url.clone()), Auth::dev(sub, api_url))
         }
-        Err(_) => Auth::discover(env("OIDC_ISSUER")?, public_url.clone()).await?,
-    });
+        Err(_) => {
+            let issuer = env("OIDC_ISSUER")?;
+            (
+                Auth::discover(issuer.clone(), public_url.clone()).await?,
+                Auth::discover(issuer, api_url).await?,
+            )
+        }
+    };
 
     let host = public_url
         .split("://")
@@ -79,7 +98,10 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_default()
         .to_owned();
     let mcp = StreamableHttpService::new(
-        move || Ok(GymServer::new(app.clone())),
+        {
+            let app = app.clone();
+            move || Ok(GymServer::new(app.clone()))
+        },
         Arc::new(NeverSessionManager::default()),
         StreamableHttpServerConfig::default()
             .with_legacy_session_mode(false)
@@ -87,7 +109,12 @@ async fn main() -> anyhow::Result<()> {
             .with_allowed_hosts([host.as_str(), "localhost", "127.0.0.1"]),
     );
 
-    let router = auth::router(axum::Router::new().fallback_service(mcp), auth);
+    let router = auth::router(
+        axum::Router::new().fallback_service(mcp),
+        Arc::new(auth),
+        api::router(app),
+        Arc::new(api_auth),
+    );
 
     let bind = env_or("BIND_ADDR", "0.0.0.0:8080");
     tracing::info!("listening on {bind}, MCP at {public_url}/mcp");
@@ -103,6 +130,27 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_urls() {
+        assert_eq!(
+            parse_public_url("https://gym.example.com/").unwrap(),
+            "https://gym.example.com"
+        );
+        assert_eq!(
+            parse_public_url("http://localhost:8099").unwrap(),
+            "http://localhost:8099"
+        );
+        for bad in [
+            "https://host/gym",
+            "https://host/gym/",
+            "https://host/?a=1",
+            "https://host/#x",
+            "host",
+        ] {
+            assert!(parse_public_url(bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn durations() {
