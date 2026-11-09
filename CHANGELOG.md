@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/StephanMeijer/gym-mcp/compare/v0.5.0...v0.5.1) - 2026-11-09
+
+### Added
+
+- *(search)* add a muscle filter and reps to muscle_group_volume
+- *(api)* serve the tools over /api for apps
+
+### Fixed
+
+- *(search)* filter and sort set_search on the per-side load
+- *(server)* shut down gracefully on SIGTERM as well as Ctrl-C
+- *(setup)* reject a muscle listed twice in one exercise
+- *(search)* reject an empty muscle_groups filter
+- *(api)* require a json content type on tool calls
+- *(auth)* reject a PUBLIC_URL with a path
+
+### Other
+
+- *(docker)* allow user namespaces for rootlesskit on ubuntu runners
+- *(docker)* build images on a rootless buildkitd
+- *(migrations)* prove 0019 leaves clean rows untouched
+- *(deps)* update rmcp to 3.9.0
+
 ## [0.5.0](https://github.com/StephanMeijer/gym-mcp/compare/v0.4.5...v0.5.0) - 2026-11-06
 
 ### Added
