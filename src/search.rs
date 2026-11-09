@@ -376,6 +376,7 @@ pub async fn search(app: &App, owner: &str, a: SearchArgs) -> AppResult<Value> {
 pub enum SetOrder {
     #[default]
     PerformedAt,
+    /// Per-side load (`load_kg`).
     Weight,
     Reps,
     Volume,
@@ -402,7 +403,9 @@ pub struct SetSearchArgs {
     pub from: Option<String>,
     /// Exclusive.
     pub to: Option<String>,
+    /// Compares the per-side load (`load_kg`), not the logged weight_kg.
     pub min_weight_kg: Option<f64>,
+    /// Compares the per-side load (`load_kg`), not the logged weight_kg.
     pub max_weight_kg: Option<f64>,
     pub min_reps: Option<i32>,
     pub max_reps: Option<i32>,
@@ -423,7 +426,7 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
 
     let mut q: QueryBuilder<Postgres> = QueryBuilder::new(format!(
         "SELECT json_build_object('set_id', s.id, 'workout_id', w.id, 'gym', g.name, 'exercise', e.name,
-                'performed_at', s.performed_at, {SET_JSON},
+                'performed_at', s.performed_at, {SET_JSON}, 'load_kg', {LOAD},
                 'pace_s_per_km', round({PACE}::numeric), 'volume_kg', {VOLUME}, 'e1rm_kg', round({E1RM}::numeric, 1))
          FROM workout_set s JOIN workout w ON w.id = s.workout_id JOIN gym g ON g.id = w.gym_id
          JOIN exercise e ON e.id = s.exercise_id
@@ -465,10 +468,10 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
             .push("::timestamptz");
     }
     if let Some(v) = a.min_weight_kg {
-        q.push(" AND s.weight_kg >= ").push_bind(v);
+        q.push(format!(" AND {LOAD} >= ")).push_bind(v);
     }
     if let Some(v) = a.max_weight_kg {
-        q.push(" AND s.weight_kg <= ").push_bind(v);
+        q.push(format!(" AND {LOAD} <= ")).push_bind(v);
     }
     if let Some(v) = a.min_reps {
         q.push(" AND s.reps >= ").push_bind(v);
@@ -481,7 +484,7 @@ pub async fn set_search(app: &App, owner: &str, a: SetSearchArgs) -> AppResult<V
     }
     let key = match a.order_by {
         SetOrder::PerformedAt => "s.performed_at".to_owned(),
-        SetOrder::Weight => "s.weight_kg".to_owned(),
+        SetOrder::Weight => LOAD.to_owned(),
         SetOrder::Reps => "s.reps".to_owned(),
         SetOrder::Volume => VOLUME.to_owned(),
         SetOrder::E1rm => E1RM.to_owned(),

@@ -1795,6 +1795,45 @@ async fn unilateral_counts_per_side(pool: PgPool) {
     assert_eq!(pr[0]["best_e1rm"]["weight_kg"], 60.0);
 }
 
+#[sqlx::test]
+async fn set_search_weight_uses_per_side_load(pool: PgPool) {
+    let app = app(pool);
+    seed(&app).await;
+    workout::start(&app, ME, a(json!({"gym": "ndsm", "started_at": hours_ago(1)})))
+        .await
+        .unwrap();
+    for (kg, extra) in [
+        (20.0, json!({})),
+        (25.0, json!({"unilateral": true})),
+        (40.0, json!({"unilateral": true, "load_basis": "total"})),
+    ] {
+        let mut args = json!({"exercise": "cable fly", "sets": [{"reps": 10, "weight_kg": kg}]});
+        args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        workout::set_add(&app, ME, a(args)).await.unwrap();
+    }
+    let find = |extra: Value| {
+        let app = app.clone();
+        async move {
+            let mut args = json!({"exercise": "cable fly"});
+            args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let rows = search::set_search(&app, ME, a(args)).await.unwrap();
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .map(|r| (r["weight_kg"].as_f64().unwrap(), r["load_kg"].as_f64().unwrap()))
+                .collect::<Vec<_>>()
+        }
+    };
+
+    // 40 kg for both sides is 20 kg per side; the logged weight stays as it was.
+    // It ties with the 20 kg set, and ties go newest first.
+    let all = find(json!({"order_by": "weight"})).await;
+    assert_eq!(all, [(25.0, 25.0), (40.0, 20.0), (20.0, 20.0)]);
+    assert!(find(json!({"min_weight_kg": 30})).await.is_empty());
+    assert_eq!(find(json!({"max_weight_kg": 20})).await.len(), 2);
+    assert_eq!(find(json!({"min_weight_kg": 25})).await, [(25.0, 25.0)]);
+}
+
 async fn past_fly(app: &App, days: i64, kg: f64, variant: Option<&str>) -> Value {
     let start = Utc::now() - chrono::Duration::days(days);
     let w = workout::add_past(
