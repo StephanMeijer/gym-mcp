@@ -38,7 +38,8 @@ Muscle balance: training_overview.muscle_groups has a row per muscle: muscle_gro
 (weighted: primary 1, secondary 0.5; strength only), train_days_28d and avg_rpe_28d. Rule of thumb for hypertrophy: \
 ~10-20 sets per muscle per week, trained 2+ times a week; for strength, fewer and heavier sets. Point out muscles well \
 below that or not trained in 14+ days; the judgement is yours.
-For a specific period (\"last 10 days\", \"October\") use muscle_group_volume; for trends over time, progress.
+For a specific period (\"last 10 days\", \"this week\", \"last month\", \"October\") use muscle_group_volume, \
+with muscle_groups to answer for just some muscles; for trends over time, progress.
 Effort: when the user says how a set felt, record rpe (1-10; \"2 left in the tank\" = RPE 8, \"to failure\" = 10) and rest_s \
 if mentioned. Ask once for their goal, their goals and plans in their own words (including any event and its date) and \
 any injuries or limitations; save them with settings_update (goal, goals_notes, priority_muscle_groups, limitations). \
@@ -447,7 +448,7 @@ impl GymServer {
     }
 
     #[tool(
-        description = "One row per muscle group over a period (default the last 7 days, or days / from-to): weighted sets (primary 1, secondary 0.5), sets per week, training days, average RPE, days since, and the exercises behind it.",
+        description = "One row per muscle group over a period (default the last 7 days; or days, or any from-to range such as this week or last month), optionally only some muscle_groups: weighted sets and reps (primary 1, secondary 0.5), sets per week, distinct exercises, training days, average RPE, days since, and every exercise behind it with its role.",
         annotations(
             title = "Muscle volume over a period",
             read_only_hint = true,
