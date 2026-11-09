@@ -951,8 +951,9 @@ async fn migration_dedupes_muscle_groups(pool: PgPool) {
     assert_eq!(chest().await, 2.0, "the duplicate counts twice before the fix");
 
     let groups = || async {
-        sqlx::query_as::<_, (String, Vec<String>, Vec<String>)>(
-            "SELECT name, muscle_groups, secondary_muscle_groups FROM exercise WHERE name IN ('Twice', 'Leg press') ORDER BY name",
+        // xmin changes whenever a row is rewritten, even with identical values.
+        sqlx::query_as::<_, (String, Vec<String>, Vec<String>, String)>(
+            "SELECT name, muscle_groups, secondary_muscle_groups, xmin::text FROM exercise WHERE name IN ('Twice', 'Leg press') ORDER BY name",
         )
         .fetch_all(&pool)
         .await
@@ -965,14 +966,9 @@ async fn migration_dedupes_muscle_groups(pool: PgPool) {
         .unwrap();
     let after = groups().await;
     assert_eq!(after[0], before[0], "a clean row is untouched");
-    assert_eq!(
-        after[1],
-        (
-            "Twice".into(),
-            vec!["chest".to_string(), "triceps".into()],
-            vec!["front_delts".to_string()]
-        )
-    );
+    assert_ne!(after[1].3, before[1].3, "the duplicated row is rewritten");
+    assert_eq!(after[1].1, ["chest", "triceps"]);
+    assert_eq!(after[1].2, ["front_delts"]);
     assert_eq!(chest().await, 1.0);
 }
 
