@@ -2189,7 +2189,12 @@ async fn api_serves_the_tools_over_http(pool: PgPool) {
     let url = format!("http://{}/v1/tools", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let http = reqwest::Client::new();
-    let post = |name: &str, body: &'static str| http.post(format!("{url}/{name}")).body(body).send();
+    let post = |name: &str, body: &'static str| {
+        http.post(format!("{url}/{name}"))
+            .header("content-type", "application/json; charset=utf-8")
+            .body(body)
+            .send()
+    };
 
     let tools: Value = http.get(&url).send().await.unwrap().json().await.unwrap();
     assert!(
@@ -2211,4 +2216,15 @@ async fn api_serves_the_tools_over_http(pool: PgPool) {
     assert!(err["error"].as_str().unwrap().starts_with("invalid arguments"), "{err}");
     assert_eq!(post("gym_get", "{not json").await.unwrap().status(), 400);
     assert_eq!(post("nope", "").await.unwrap().status(), 404);
+    // A cross-site "simple request" must not run a tool.
+    let plain = http
+        .post(format!("{url}/gym_create"))
+        .header("content-type", "text/plain")
+        .body(r#"{"name": "Evil"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(plain.status(), 415);
+    let bare = http.post(format!("{url}/workout_finish")).send().await.unwrap();
+    assert_eq!(bare.status(), 415);
 }

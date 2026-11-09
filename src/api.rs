@@ -2,7 +2,7 @@
 
 use axum::body::Bytes;
 use axum::extract::{Extension, Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -21,8 +21,18 @@ async fn call_tool(
     State(app): State<App>,
     Extension(Owner(owner)): Extension<Owner>,
     Path(name): Path<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // A JSON content type forces a CORS preflight, so other sites can't run tools (matters with DEV_SUB).
+    let is_json = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json"));
+    if !is_json {
+        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+    }
     let args = if body.is_empty() {
         json!({})
     } else {

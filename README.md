@@ -78,7 +78,7 @@ Endpoints: `/mcp` (Streamable HTTP, stateless), `/api/v1/tools` (for apps, see b
 The same tools as MCP, as plain JSON over HTTP, with the same names, arguments and results:
 
 - `GET /api/v1/tools` lists every tool with its `inputSchema`.
-- `POST /api/v1/tools/{name}` runs one: the body holds the arguments (an empty body means `{}`), and the response is the tool's output. `400 {"error": …}` means bad input, `404` an unknown tool.
+- `POST /api/v1/tools/{name}` runs one: send `Content-Type: application/json` (also with an empty body, which means `{}`), the body holds the arguments, and the response is the tool's output. `400 {"error": …}` means bad input, `404` an unknown tool, `415` a missing or non-JSON content type.
 
 Tokens need `aud` = `PUBLIC_URL/api`. An MCP token doesn't work here, and an app token doesn't work on `/mcp`.
 
