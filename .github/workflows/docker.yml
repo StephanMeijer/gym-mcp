@@ -1,6 +1,6 @@
 # Reusable image build. push=false: validate that the Dockerfile builds (CI).
-# push=true: build each arch natively, push by digest, merge into one multi-arch
-# manifest tagged X.Y.Z / X.Y / X / latest, and attest build provenance.
+# push=true: build (amd64 for now), push by digest, merge into one
+# manifest list tagged X.Y.Z / X.Y / X / latest, and attest build provenance.
 #
 # Jobs declare no `permissions:` and inherit the caller's. A nested job asking for
 # more than the caller has fails the whole run ("workflow file issue"), and PRs from
@@ -29,22 +29,24 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    # Our own runners (no Docker daemon, amd64 only); fork PRs run untrusted code, so GitHub's.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || '9xx' }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { arch: amd64, platform: linux/amd64, runner: ubuntu-latest }
-          - { arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }
+          # shortcut: amd64 only, the 9xx nodes have no arm64; add arm64 back with arm runners.
+          - { arch: amd64, platform: linux/amd64 }
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      # buildx's default docker-container driver always runs buildkitd privileged, so run a
-      # rootless one ourselves, unprivileged, and point buildx at it (remote driver).
+      # GitHub-hosted: buildx's default docker-container driver always runs buildkitd privileged,
+      # so run a rootless one ourselves, unprivileged, and point buildx at it (remote driver).
       - name: Start rootless buildkitd
+        if: runner.environment == 'github-hosted'
         run: |
           set -euo pipefail
           # Ubuntu 23.10+ blocks user namespaces for unprivileged processes; rootlesskit needs one.
@@ -62,10 +64,17 @@ jobs:
           echo "buildkitd runs as uid $(docker exec buildkitd id -u)"
         env:
           BUILDKIT_IMAGE: moby/buildkit:v0.34.2-rootless@sha256:c8252268760e1baba80780d63d738ef9f260fb7c7c0973c78494cb9ddd99eda1
+      # Self-hosted (9xx): the BuildKit the cluster provides, at the repo variable BUILDKIT_HOST.
+      - name: Require BUILDKIT_HOST
+        if: runner.environment != 'github-hosted'
+        env:
+          BUILDKIT_HOST: ${{ vars.BUILDKIT_HOST }}
+        run: |
+          [ -n "${BUILDKIT_HOST}" ] || { echo "::error::repo variable BUILDKIT_HOST is not set" >&2; exit 1; }
       - uses: docker/setup-buildx-action@v4.4.1
         with:
           driver: remote
-          endpoint: tcp://127.0.0.1:1234
+          endpoint: ${{ runner.environment == 'github-hosted' && 'tcp://127.0.0.1:1234' || vars.BUILDKIT_HOST }}
       - name: Refuse a release build without a version tag
         if: inputs.push
         env:
@@ -91,7 +100,7 @@ jobs:
           outputs: >-
             ${{ inputs.push
               && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE)
-              || format('type=docker,name={0}:validation', env.IMAGE) }}
+              || 'type=cacheonly' }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,scope=${{ matrix.arch }},mode=max
       - name: Record digest

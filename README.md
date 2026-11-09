@@ -141,10 +141,10 @@ Then, in Claude: **Settings → Connectors → Add custom connector**, with URL 
 
 ## Releases
 
-Commits on `main` follow [Conventional Commits](https://www.conventionalcommits.org/). On every push to `main`, CI tests, lints, and builds the image for amd64 and arm64. If that passes, [release-plz](https://release-plz.dev):
+Commits on `main` follow [Conventional Commits](https://www.conventionalcommits.org/). On every push to `main`, CI tests, lints, and builds the amd64 image on our own `9xx` runners, through the BuildKit at the repo variable `BUILDKIT_HOST` (fork PRs use GitHub's runners). If that passes, [release-plz](https://release-plz.dev):
 1. opens or updates a release PR with the version bump and `CHANGELOG.md`;
 2. when that PR is merged, tags `vX.Y.Z` and creates the GitHub release;
-3. then dispatches `release.yml`, which pushes the multi-arch image with build provenance.
+3. then dispatches `release.yml`, which pushes the image with build provenance.
 
 Versions come from git tags (`git_only`); the crate is not published to crates.io.
 
