@@ -568,6 +568,7 @@ pub async fn call_api(app: &App, owner: &str, name: &str, args: Value) -> Option
 #[cfg(test)]
 mod tests {
     use super::{GymServer, call_api};
+    use crate::db::AppError;
 
     #[test]
     fn every_tool_is_annotated_and_closed_world() {
@@ -617,5 +618,86 @@ mod tests {
             assert!(r.is_some(), "{} is not served over /api", t.name);
         }
         assert!(call_api(&app, "alice", "nope", serde_json::json!({})).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn argument_objects_reject_unknown_fields_and_publish_closed_schemas() {
+        let app = crate::db::App {
+            pool: sqlx::postgres::PgPoolOptions::new()
+                .acquire_timeout(std::time::Duration::from_millis(100))
+                .connect_lazy("postgres://localhost:1/none")
+                .unwrap(),
+            default_timezone: "Europe/Amsterdam".into(),
+            stale_after: std::time::Duration::from_secs(3600),
+        };
+
+        let tools = GymServer::tool_list();
+        for tool in &tools {
+            let value = serde_json::to_value(tool).unwrap();
+            let schema = &value["inputSchema"];
+            let has_fields = schema["properties"]
+                .as_object()
+                .is_some_and(|properties| !properties.is_empty());
+            if !has_fields {
+                continue;
+            }
+
+            assert_eq!(
+                schema["additionalProperties"],
+                serde_json::Value::Bool(false),
+                "{} input schema accepts unknown fields",
+                tool.name
+            );
+            let result = call_api(
+                &app,
+                "alice",
+                &tool.name,
+                serde_json::json!({"__unexpected_field__": true}),
+            )
+            .await
+            .unwrap();
+            let message = match result {
+                Err(AppError::User(message)) => message,
+                other => panic!("{} did not reject an unknown field: {other:?}", tool.name),
+            };
+            assert!(
+                message.contains("unknown field") && message.contains("__unexpected_field__"),
+                "{} returned an unhelpful validation error: {message}",
+                tool.name
+            );
+        }
+
+        let set_add_schema = tools
+            .iter()
+            .find(|tool| tool.name == "set_add")
+            .map(|tool| serde_json::to_value(tool).unwrap())
+            .unwrap();
+        let set_input_schema = serde_json::to_value(schemars::schema_for!(crate::workout::SetInput)).unwrap();
+        assert_eq!(set_input_schema["additionalProperties"], serde_json::Value::Bool(false));
+        assert_eq!(
+            set_add_schema["inputSchema"]["additionalProperties"],
+            serde_json::Value::Bool(false)
+        );
+
+        for (args, field) in [
+            (
+                serde_json::json!({"exercise": "curl", "sets": [{"reps": 10, "weight": 50}]}),
+                "weight",
+            ),
+            (
+                serde_json::json!({"exercise": "curl", "sets": [{"reps": 10, "weight_kg": 50}], "unilatral": true}),
+                "unilatral",
+            ),
+        ] {
+            let result = call_api(&app, "alice", "set_add", args).await.unwrap();
+            let message = match result {
+                Err(AppError::User(message)) => message,
+                other => panic!("set_add accepted misspelled field {field}: {other:?}"),
+            };
+            assert!(
+                message.contains("unknown field") && message.contains(field),
+                "set_add did not identify {field}: {message}"
+            );
+        }
     }
 }

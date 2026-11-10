@@ -192,6 +192,7 @@ pub(crate) fn not_future(at: DateTime<Utc>, now: DateTime<Utc>) -> AppResult<()>
 // ---------- workout tools ----------
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct StartArgs {
     /// Gym name, alias, or id ("ndsm trainmore").
     pub gym: String,
@@ -252,6 +253,7 @@ pub async fn start(app: &App, owner: &str, a: StartArgs) -> AppResult<Value> {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AddPastArgs {
     pub gym: String,
     /// RFC 3339, or local time like "2026-11-01 18:00".
@@ -294,6 +296,7 @@ pub async fn add_past(app: &App, owner: &str, a: AddPastArgs) -> AppResult<Value
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FinishArgs {
     /// When you left, if not now. Must be at or after the last set.
     pub finished_at: Option<String>,
@@ -328,6 +331,7 @@ pub async fn finish(app: &App, owner: &str, a: FinishArgs) -> AppResult<Value> {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateArgs {
     pub workout_id: i64,
     pub started_at: Option<String>,
@@ -531,6 +535,7 @@ impl CardioMetrics {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetInput {
     pub reps: Option<i32>,
     /// The number on the implement: per dumbbell/kettlebell; barbell = total incl. bar; machine = stack setting.
@@ -546,8 +551,20 @@ pub struct SetInput {
     pub rest_s: Option<i32>,
     /// Default working. Warm-ups and sets cut short don't count towards volume, progress or PRs.
     pub set_type: Option<SetType>,
-    #[serde(flatten)]
-    pub cardio: CardioMetrics,
+    /// Average heart rate, bpm.
+    pub avg_hr: Option<i32>,
+    /// Maximum heart rate, bpm.
+    pub max_hr: Option<i32>,
+    /// kcal.
+    pub calories: Option<i32>,
+    /// Incline in percent; negative = decline.
+    pub avg_incline_pct: Option<f64>,
+    pub max_incline_pct: Option<f64>,
+    /// In speed_unit (default km/h).
+    pub avg_speed: Option<f64>,
+    pub max_speed: Option<f64>,
+    /// Unit of avg_speed / max_speed; mph is converted to km/h.
+    pub speed_unit: Option<SpeedUnit>,
     /// When the set was performed, if not just now. RFC 3339, or local time like "19:40" on a date: "2026-11-02 19:40".
     pub performed_at: Option<String>,
     /// performed_at is a guess ("around noon").
@@ -555,7 +572,23 @@ pub struct SetInput {
     pub notes: Option<String>,
 }
 
+impl SetInput {
+    fn cardio_metrics(&self) -> CardioMetrics {
+        CardioMetrics {
+            avg_hr: self.avg_hr,
+            max_hr: self.max_hr,
+            calories: self.calories,
+            avg_incline_pct: self.avg_incline_pct,
+            max_incline_pct: self.max_incline_pct,
+            avg_speed: self.avg_speed,
+            max_speed: self.max_speed,
+            speed_unit: self.speed_unit,
+        }
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetAddArgs {
     /// Exercise name, alias, or id.
     pub exercise: String,
@@ -705,7 +738,8 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
             None => now + Duration::milliseconds(i as i64),
         };
         fit_in_window(&mut tx, &mut t, at, now).await?;
-        let (avg_speed, max_speed) = s.cardio.speeds_kmh();
+        let cardio = s.cardio_metrics();
+        let (avg_speed, max_speed) = cardio.speeds_kmh();
         sqlx::query(
             "INSERT INTO workout_set (workout_id, exercise_id, performed_at, reps, weight_kg, duration_s, rpe, rest_s, notes,
                                       distance_m, intensity, machine, set_type, unilateral, load_basis, variant,
@@ -730,11 +764,11 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
         .bind(a.unilateral.unwrap_or(false))
         .bind(a.load_basis.map(LoadBasis::as_str))
         .bind(&variant)
-        .bind(s.cardio.avg_hr)
-        .bind(s.cardio.max_hr)
-        .bind(s.cardio.calories)
-        .bind(s.cardio.avg_incline_pct)
-        .bind(s.cardio.max_incline_pct)
+        .bind(cardio.avg_hr)
+        .bind(cardio.max_hr)
+        .bind(cardio.calories)
+        .bind(cardio.avg_incline_pct)
+        .bind(cardio.max_incline_pct)
         .bind(avg_speed)
         .bind(max_speed)
         .bind(s.time_estimated.unwrap_or(false))
@@ -756,6 +790,7 @@ pub async fn set_add(app: &App, owner: &str, a: SetAddArgs) -> AppResult<Value> 
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetUpdateArgs {
     pub set_id: Option<i64>,
     /// Instead of set_id: apply the same change to several sets at once (all or nothing).
@@ -779,12 +814,39 @@ pub struct SetUpdateArgs {
     pub unilateral: Option<bool>,
     /// Only on unilateral sets; default = back to the default convention.
     pub load_basis: Option<LoadBasis>,
-    #[serde(flatten)]
-    pub cardio: CardioMetrics,
+    /// Average heart rate, bpm.
+    pub avg_hr: Option<i32>,
+    /// Maximum heart rate, bpm.
+    pub max_hr: Option<i32>,
+    /// kcal.
+    pub calories: Option<i32>,
+    /// Incline in percent; negative = decline.
+    pub avg_incline_pct: Option<f64>,
+    pub max_incline_pct: Option<f64>,
+    /// In speed_unit (default km/h).
+    pub avg_speed: Option<f64>,
+    pub max_speed: Option<f64>,
+    /// Unit of avg_speed / max_speed; mph is converted to km/h.
+    pub speed_unit: Option<SpeedUnit>,
     pub performed_at: Option<String>,
     /// The time is a guess ("around noon"). Passing a new time clears it unless this says it's still estimated.
     pub time_estimated: Option<bool>,
     pub notes: Option<String>,
+}
+
+impl SetUpdateArgs {
+    fn cardio_metrics(&self) -> CardioMetrics {
+        CardioMetrics {
+            avg_hr: self.avg_hr,
+            max_hr: self.max_hr,
+            calories: self.calories,
+            avg_incline_pct: self.avg_incline_pct,
+            max_incline_pct: self.max_incline_pct,
+            avg_speed: self.avg_speed,
+            max_speed: self.max_speed,
+            speed_unit: self.speed_unit,
+        }
+    }
 }
 
 async fn set_workout(tx: &mut Tx, owner: &str, set_id: i64) -> AppResult<i64> {
@@ -890,7 +952,8 @@ async fn update_one(
         let mut t = target(tx, owner, workout_id).await?;
         fit_in_window(tx, &mut t, at, now).await?;
     }
-    let (avg_speed, max_speed) = a.cardio.speeds_kmh();
+    let cardio = a.cardio_metrics();
+    let (avg_speed, max_speed) = cardio.speeds_kmh();
     sqlx::query(
         "UPDATE workout_set SET
             exercise_id = coalesce($2, exercise_id), reps = coalesce($3, reps), weight_kg = coalesce($4, weight_kg),
@@ -925,11 +988,11 @@ async fn update_one(
     .bind(a.unilateral)
     .bind(a.load_basis.map(LoadBasis::as_str))
     .bind(&a.variant)
-    .bind(a.cardio.avg_hr)
-    .bind(a.cardio.max_hr)
-    .bind(a.cardio.calories)
-    .bind(a.cardio.avg_incline_pct)
-    .bind(a.cardio.max_incline_pct)
+    .bind(cardio.avg_hr)
+    .bind(cardio.max_hr)
+    .bind(cardio.calories)
+    .bind(cardio.avg_incline_pct)
+    .bind(cardio.max_incline_pct)
     .bind(avg_speed)
     .bind(max_speed)
     .bind(a.time_estimated)
@@ -939,6 +1002,7 @@ async fn update_one(
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetDeleteArgs {
     pub set_id: Option<i64>,
     /// Instead of set_id: delete several sets at once (all or nothing).

@@ -135,6 +135,7 @@ impl Goal {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SettingsArgs {
     /// IANA timezone, e.g. "Europe/Amsterdam". Used for "today", weeks (ISO, Monday) and months, and for reading local times.
     pub timezone: Option<String>,
@@ -203,6 +204,7 @@ pub async fn settings_update(app: &App, owner: &str, a: SettingsArgs) -> AppResu
 // ---------- gyms ----------
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GymCreateArgs {
     pub name: String,
     /// Other names you use for it ("ndsm", "trainmore noord").
@@ -233,6 +235,7 @@ pub async fn gym_create(app: &App, owner: &str, a: GymCreateArgs) -> AppResult<V
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GymUpdateArgs {
     /// Gym name, alias, or id.
     pub gym: String,
@@ -304,6 +307,7 @@ async fn gym_json(tx: &mut Tx, owner: &str, id: i64) -> AppResult<Value> {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GymRef {
     /// Gym name, alias, or id.
     pub gym: String,
@@ -353,6 +357,7 @@ impl ExerciseKind {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ExerciseCreateArgs {
     /// Specific enough to compare weights: "Dumbbell bench press", not "bench".
     pub name: String,
@@ -410,6 +415,7 @@ pub async fn exercise_create(app: &App, owner: &str, a: ExerciseCreateArgs) -> A
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ExerciseUpdateArgs {
     /// Exercise name, alias, or id.
     pub exercise: String,
@@ -457,6 +463,7 @@ pub async fn exercise_update(app: &App, owner: &str, a: ExerciseUpdateArgs) -> A
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ExerciseSearchArgs {
     /// Words to match in the name or aliases (typos are tolerated). Omit to list all.
     pub query: Option<String>,

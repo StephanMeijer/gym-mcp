@@ -25,6 +25,7 @@ async fn check_workout(tx: &mut Tx, owner: &str, id: Option<i64>) -> AppResult<(
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BodyNoteAddArgs {
     /// Where: a muscle group name when one fits ("lower_back", "quads"), otherwise free text ("left knee").
     pub location: String,
@@ -61,6 +62,7 @@ pub async fn body_note_add(app: &App, owner: &str, a: BodyNoteAddArgs) -> AppRes
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BodyNoteListArgs {
     /// Only notes whose location contains this ("back").
     pub location: Option<String>,
@@ -90,6 +92,7 @@ pub async fn body_note_list(app: &App, owner: &str, a: BodyNoteListArgs) -> AppR
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BodyNoteUpdateArgs {
     pub id: i64,
     pub location: Option<String>,
@@ -126,6 +129,7 @@ pub async fn body_note_update(app: &App, owner: &str, a: BodyNoteUpdateArgs) -> 
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BodyNoteDeleteArgs {
     pub id: i64,
 }
