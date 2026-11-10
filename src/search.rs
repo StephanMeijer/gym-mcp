@@ -62,6 +62,7 @@ async fn gym_or_current(tx: &mut Tx, owner: &str, gym: &Option<String>) -> AppRe
 // ---------- training_overview ----------
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct OverviewArgs {
     /// Gym name, alias, or id. Default: the gym of the open workout.
     pub gym: Option<String>,
@@ -250,6 +251,7 @@ async fn muscle_groups_overview(tx: &mut Tx, owner: &str) -> AppResult<Value> {
 // ---------- muscle_group_volume ----------
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MuscleVolumeArgs {
     /// The last N days up to now (1-365). Default 7 when from is not given.
     pub days: Option<i64>,
@@ -305,6 +307,7 @@ pub async fn muscle_group_volume(app: &App, owner: &str, a: MuscleVolumeArgs) ->
 // ---------- search ----------
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SearchArgs {
     /// Free text: names (typos ok) and words in notes/descriptions.
     pub query: String,
@@ -388,6 +391,7 @@ pub enum SetOrder {
 }
 
 #[derive(Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SetSearchArgs {
     pub exercise: Option<String>,
     /// Matches primary muscles. Coarse names work too: back, shoulders, legs, arms.
@@ -539,6 +543,7 @@ pub enum Bucket {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ProgressArgs {
     /// Give exactly one of exercise or muscle_group.
     pub exercise: Option<String>,
@@ -619,6 +624,7 @@ pub async fn progress(app: &App, owner: &str, a: ProgressArgs) -> AppResult<Valu
 // ---------- personal_records ----------
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RecordsArgs {
     /// Omit for every exercise.
     pub exercise: Option<String>,
@@ -690,6 +696,7 @@ pub async fn personal_records(app: &App, owner: &str, a: RecordsArgs) -> AppResu
 // ---------- exercise_alternatives ----------
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AlternativesArgs {
     pub exercise: String,
     /// Default: the gym of the open workout. Its equipment text is returned so you can judge what's possible there.
@@ -733,6 +740,7 @@ pub async fn exercise_alternatives(app: &App, owner: &str, a: AlternativesArgs) 
 // ---------- workout_list ----------
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WorkoutListArgs {
     pub gym: Option<String>,
     /// Only workouts that include this exercise.

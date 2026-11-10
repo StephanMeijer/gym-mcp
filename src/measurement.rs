@@ -85,6 +85,7 @@ fn convert(kind: MeasurementKind, value: f64, unit: Option<Unit>) -> AppResult<f
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MeasurementAddArgs {
     /// The value in `unit` ("18.5").
     pub value: f64,
@@ -119,6 +120,7 @@ pub async fn measurement_add(app: &App, owner: &str, a: MeasurementAddArgs) -> A
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MeasurementListArgs {
     pub kind: MeasurementKind,
     /// From (inclusive). RFC 3339 or local time/date like "2026-10-01".
@@ -146,6 +148,7 @@ pub async fn measurement_list(app: &App, owner: &str, a: MeasurementListArgs) ->
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MeasurementUpdateArgs {
     pub id: i64,
     pub value: Option<f64>,
@@ -183,6 +186,7 @@ pub async fn measurement_update(app: &App, owner: &str, a: MeasurementUpdateArgs
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MeasurementDeleteArgs {
     pub id: i64,
 }

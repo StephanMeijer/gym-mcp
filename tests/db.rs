@@ -2423,13 +2423,14 @@ async fn api_serves_the_tools_over_http(pool: PgPool) {
     };
 
     let tools: Value = http.get(&url).send().await.unwrap().json().await.unwrap();
-    assert!(
-        tools
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|t| t["name"] == "set_add" && t["inputSchema"].is_object())
-    );
+    let set_add = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "set_add")
+        .unwrap();
+    assert!(set_add["inputSchema"].is_object());
+    assert_eq!(set_add["inputSchema"]["additionalProperties"], false);
 
     let created = post("gym_create", r#"{"name": "Trainmore NDSM"}"#).await.unwrap();
     assert_eq!(created.status(), 200);
@@ -2440,6 +2441,15 @@ async fn api_serves_the_tools_over_http(pool: PgPool) {
     assert_eq!(bad.status(), 400);
     let err: Value = bad.json().await.unwrap();
     assert!(err["error"].as_str().unwrap().starts_with("invalid arguments"), "{err}");
+    let bad_set = post("set_add", r#"{"exercise":"curl","sets":[{"reps":10,"weight":50}]}"#)
+        .await
+        .unwrap();
+    assert_eq!(bad_set.status(), 400);
+    let err: Value = bad_set.json().await.unwrap();
+    assert!(
+        err["error"].as_str().unwrap().contains("unknown field") && err["error"].as_str().unwrap().contains("weight"),
+        "{err}"
+    );
     assert_eq!(post("gym_get", "{not json").await.unwrap().status(), 400);
     assert_eq!(post("nope", "").await.unwrap().status(), 404);
     // A cross-site "simple request" must not run a tool.
